@@ -8,7 +8,9 @@ from loguru import logger
 from ..database import SessionLocal
 from ..models.models import Job, JobStatus
 from ..config import MAX_RETRIES
-from ..services.detector import detect_language
+from ..lang_gate import detect_lang_en_fr_only
+from ..services.detector import get_model
+from ..translate import translate_en_fr_only
 from .. import metrics
 import threading
 
@@ -41,10 +43,33 @@ def process_one(session: Session, job: Job) -> None:
     metrics.LANGID_JOBS_RUNNING.inc()
 
     try:
-        if os.environ.get("USE_MOCK_DETECTOR", "0") == "1":
-            result = _mock_detect(job.input_path)
+        # Detect language with EN/FR gate
+        lang_info = detect_lang_en_fr_only(job.input_path)
+        lang = lang_info["language"]
+
+        # Transcribe
+        model = get_model()
+        segments, info = model.transcribe(job.input_path, language=lang, beam_size=5, best_of=5, vad_filter=True, suppress_blank=True)
+        text = " ".join([s.text for s in segments])
+
+        result = {
+            "language": lang,
+            "text": text,
+            "info": info,
+        }
+
+        # Translate if target language is provided
+        if job.target_lang and job.target_lang != lang:
+            translated_text = translate_en_fr_only(text, source_lang=lang, target_lang=job.target_lang)
+            result["translated"] = True
+            result["result"] = translated_text
+            result["target_lang"] = job.target_lang
+            if lang == "en":
+                metrics.LANGID_TRANSLATE_EN2FR.inc()
+            else:
+                metrics.LANGID_TRANSLATE_FR2EN.inc()
         else:
-            result = detect_language(job.input_path)
+            result["translated"] = False
 
         job.progress = 90
         session.commit()

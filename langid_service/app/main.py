@@ -8,13 +8,16 @@ from loguru import logger
 from sqlalchemy.orm import Session
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from .metrics import REGISTRY
+from typing import Optional
 
-from .config import LOG_DIR, MAX_WORKERS, WHISPER_MODEL_SIZE, MAX_FILE_SIZE_MB
+from .config import LOG_DIR, MAX_WORKERS, WHISPER_MODEL_SIZE, MAX_FILE_SIZE_MB, ENFR_STRICT_REJECT
 from .database import Base, engine, SessionLocal
 from .models.models import Job, JobStatus
 from .schemas import EnqueueResponse, JobStatusResponse, ResultResponse, SubmitByUrl, JobListResponse, DeleteJobsRequest
 from .utils import gen_uuid, ensure_dirs, validate_upload, move_to_storage
 from .worker.runner import work_once
+from .guards import ensure_allowed
+from .lang_gate import validate_language_strict
 
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -113,7 +116,11 @@ def delete_jobs(payload: DeleteJobsRequest):
         session.close()
 
 @app.post("/jobs", response_model=EnqueueResponse)
-async def submit_job(file: UploadFile = File(...)):
+async def submit_job(file: UploadFile = File(...), target_lang: Optional[str] = None):
+    # Validate target language
+    if target_lang:
+        ensure_allowed(target_lang)
+
     # Validate upload
     raw = await file.read()
     try:
@@ -127,6 +134,10 @@ async def submit_job(file: UploadFile = File(...)):
         tmp.flush()
         tmp_path = Path(tmp.name)
 
+    # Strict mode validation
+    if ENFR_STRICT_REJECT:
+        validate_language_strict(str(tmp_path))
+
     job_id = gen_uuid()
     stored = move_to_storage(tmp_path, job_id)
     logger.info(f"Enqueued upload for job {job_id}: {stored}")
@@ -134,7 +145,7 @@ async def submit_job(file: UploadFile = File(...)):
     # Persist job
     session = SessionLocal()
     try:
-        job = Job(id=job_id, status=JobStatus.queued, input_path=str(stored))
+        job = Job(id=job_id, status=JobStatus.queued, input_path=str(stored), target_lang=target_lang)
         session.add(job)
         session.commit()
     finally:
@@ -143,7 +154,11 @@ async def submit_job(file: UploadFile = File(...)):
     return EnqueueResponse(job_id=job_id, status="queued")
 
 @app.post("/jobs/by-url", response_model=EnqueueResponse)
-async def submit_job_by_url(payload: SubmitByUrl):
+async def submit_job_by_url(payload: SubmitByUrl, target_lang: Optional[str] = None):
+    # Validate target language
+    if target_lang:
+        ensure_allowed(target_lang)
+
     # Simple URL fetch (no auth) — for production, prefer signed URLs or internal sources.
     import urllib.request
     job_id = gen_uuid()
@@ -165,6 +180,11 @@ async def submit_job_by_url(payload: SubmitByUrl):
                 f.write(response.read())
 
         validate_upload(str(tmp_file), tmp_file.stat().st_size)
+
+        # Strict mode validation
+        if ENFR_STRICT_REJECT:
+            validate_language_strict(str(tmp_file))
+
         stored = move_to_storage(tmp_file, job_id)
     except Exception as e:
         if tmp_file.exists():
@@ -173,7 +193,7 @@ async def submit_job_by_url(payload: SubmitByUrl):
 
     session = SessionLocal()
     try:
-        job = Job(id=job_id, status=JobStatus.queued, input_path=str(stored))
+        job = Job(id=job_id, status=JobStatus.queued, input_path=str(stored), target_lang=target_lang)
         session.add(job)
         session.commit()
     finally:

@@ -43,6 +43,17 @@ MAX_FILE_SIZE_MB = int(os.environ.get("MAX_FILE_SIZE_MB", "100"))
 MAX_UPLOAD_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 ALLOWED_EXTS = {".wav", ".wave", ".mp3", ".m4a", ".aac"}
 
+# --- Language Gate ---
+# Comma-separated list of allowed languages
+_allowed_langs_str = os.environ.get("ALLOWED_LANGS", "en,fr")
+ALLOWED_LANGS = {lang.strip() for lang in _allowed_langs_str.split(",")}
+
+# Minimum probability to accept a language detection
+LANG_DETECT_MIN_PROB = float(os.environ.get("LANG_DETECT_MIN_PROB", "0.60"))
+
+# If true, reject files that are not in ALLOWED_LANGS. If false, force to EN/FR.
+ENFR_STRICT_REJECT = os.environ.get("ENFR_STRICT_REJECT", "false").lower() in ("true", "1", "t")
+
 # --- Directory Creation ---
 def ensure_dirs():
     """Create necessary directories if they don't exist."""

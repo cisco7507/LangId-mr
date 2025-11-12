@@ -68,6 +68,41 @@ Ensure the service account has write access to `storage\` and `logs\`.
 - `GET /healthz` — health check
 - `GET /metrics` — minimal metrics JSON
 
+## English/French-only Mode
+
+The service can be configured to run in a strict English/French-only mode. This is useful when you want to ensure that only English or French audio is processed.
+
+### Configuration
+
+The following environment variables can be used to configure the language gate:
+
+- `ALLOWED_LANGS`: A comma-separated list of allowed languages. Defaults to `en,fr`.
+- `LANG_DETECT_MIN_PROB`: The minimum probability to accept a language detection. Defaults to `0.60`.
+- `ENFR_STRICT_REJECT`: If `true`, reject files that are not in `ALLOWED_LANGS`. If `false`, force to EN/FR. Defaults to `false`.
+
+### Usage
+
+To request a translation, you can use the `target_lang` parameter when submitting a job:
+
+```bash
+curl -F "file=@path\to\audio.wav" -F "target_lang=fr" http://localhost:8080/jobs
+```
+
+If the detected language is different from the `target_lang`, the service will translate the transcript to the target language.
+
+### Strict Rejection
+
+When `ENFR_STRICT_REJECT` is set to `true`, the service will reject any audio that is not confidently detected as English or French:
+
+```bash
+curl -F "file=@path\to\spanish_audio.wav" http://localhost:8080/jobs
+```
+
+Response:
+```json
+{"detail":"Only English/French audio supported (p=0.42, got ‘es’)"}
+```
+
 Enjoy!
 
 
