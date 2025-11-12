@@ -19,3 +19,18 @@ def move_to_storage(src: Path, dest_name: str) -> Path:
     dest = (STORAGE_DIR / dest_name).with_suffix(src.suffix.lower())
     shutil.move(str(src), dest)
     return dest
+
+import os
+
+MAX_STORED_WORDS = int(os.environ.get("MAX_STORED_WORDS", "10"))
+
+def truncate_to_words(text: str, max_words: int = MAX_STORED_WORDS) -> str:
+    """
+    Truncates a string to a maximum number of words.
+    """
+    if not text:
+        return text
+    words = text.strip().split()
+    if len(words) <= max_words:
+        return " ".join(words)
+    return " ".join(words[:max_words]) + " ..."

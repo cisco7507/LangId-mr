@@ -8,9 +8,9 @@ from langid_service.app.guards import ensure_allowed
 @patch("langid_service.app.lang_gate.load_audio_mono_16k")
 @patch("langid_service.app.lang_gate.get_model")
 def test_detect_autodetect_accepts_en(mock_get_model, mock_load_audio):
-    # Mock the model's detect_language method
+    # Mock the model's transcribe method
     mock_model = MagicMock()
-    mock_model.detect_language.return_value = (None, MagicMock(language="en", language_probability=0.9))
+    mock_model.transcribe.return_value = ([], MagicMock(language="en", language_probability=0.9))
     mock_get_model.return_value = mock_model
     mock_load_audio.return_value = "dummy_audio"
 
@@ -21,9 +21,9 @@ def test_detect_autodetect_accepts_en(mock_get_model, mock_load_audio):
 @patch("langid_service.app.lang_gate.load_audio_mono_16k")
 @patch("langid_service.app.lang_gate.get_model")
 def test_detect_autodetect_accepts_fr(mock_get_model, mock_load_audio):
-    # Mock the model's detect_language method
+    # Mock the model's transcribe method
     mock_model = MagicMock()
-    mock_model.detect_language.return_value = (None, MagicMock(language="fr", language_probability=0.9))
+    mock_model.transcribe.return_value = ([], MagicMock(language="fr", language_probability=0.9))
     mock_get_model.return_value = mock_model
     mock_load_audio.return_value = "dummy_audio"
 
@@ -35,9 +35,8 @@ def test_detect_autodetect_accepts_fr(mock_get_model, mock_load_audio):
 @patch("langid_service.app.lang_gate.pick_en_or_fr_by_scoring")
 @patch("langid_service.app.lang_gate.get_model")
 def test_detect_fallback_picks_en_or_fr(mock_get_model, mock_scoring, mock_load_audio):
-    # Mock the model's detect_language method
+    # Mock the model's transcribe method to simulate a low-confidence detection
     mock_model = MagicMock()
-    mock_model.detect_language.return_value = (None, MagicMock(language="es", language_probability=0.9))
     mock_model.transcribe.return_value = ([], MagicMock(language="es", language_probability=0.4))
     mock_get_model.return_value = mock_model
     mock_scoring.return_value = "en"
@@ -50,11 +49,10 @@ def test_detect_fallback_picks_en_or_fr(mock_get_model, mock_scoring, mock_load_
 @patch("langid_service.app.lang_gate.load_audio_mono_16k")
 @patch("langid_service.app.lang_gate.get_model")
 def test_strict_reject_blocks_non_en_fr(mock_get_model, mock_load_audio, monkeypatch):
-    # Mock the model's detect_language method
+    # Mock the model's transcribe method to simulate a low-confidence non-EN/FR detection
     from fastapi import HTTPException
     mock_model = MagicMock()
-    mock_model.detect_language.return_value = (None, MagicMock(language="es", language_probability=0.42))
-    mock_model.transcribe.return_value = ([], MagicMock(language="es", language_probability=0.4))
+    mock_model.transcribe.return_value = ([], MagicMock(language="es", language_probability=0.42))
     mock_get_model.return_value = mock_model
     mock_load_audio.return_value = "dummy_audio"
     monkeypatch.setattr("langid_service.app.lang_gate.ENFR_STRICT_REJECT", True)
@@ -96,10 +94,12 @@ def test_api_strict_rejects_non_en_fr(mock_validate, monkeypatch):
 @patch("langid_service.app.lang_gate.load_audio_mono_16k")
 @patch("langid_service.app.lang_gate.get_model")
 def test_detect_vad_retry(mock_get_model, mock_load_audio):
-    # Mock the model's detect_language method
+    # Mock the model's transcribe method to simulate a VAD retry
     mock_model = MagicMock()
-    mock_model.detect_language.return_value = (None, MagicMock(language="en", language_probability=0.3))
-    mock_model.transcribe.return_value = ([], MagicMock(language="fr", language_probability=0.8))
+    mock_model.transcribe.side_effect = [
+        ([], MagicMock(language="en", language_probability=0.3)),
+        ([], MagicMock(language="fr", language_probability=0.8)),
+    ]
     mock_get_model.return_value = mock_model
     mock_load_audio.return_value = "dummy_audio"
 

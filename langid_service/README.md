@@ -136,3 +136,10 @@ cd .\langid_service
 pytest
 ```
 
+## Database Migrations
+
+This project uses Alembic to manage database migrations. To apply the latest migrations, run the following command:
+
+```powershell
+alembic upgrade head
+```

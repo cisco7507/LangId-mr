@@ -11,6 +11,7 @@ from ..config import MAX_RETRIES
 from ..lang_gate import detect_lang_en_fr_only
 from ..services.detector import get_model
 from ..translate import translate_en_fr_only
+from ..utils import truncate_to_words
 from .. import metrics
 import threading
 
@@ -54,7 +55,7 @@ def process_one(session: Session, job: Job) -> None:
 
         result = {
             "language": lang,
-            "text": text,
+            "text": truncate_to_words(text),
             "info": info,
         }
 

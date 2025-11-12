@@ -50,7 +50,7 @@ def validate_language_strict(audio_path: str):
     """
     model = get_model()
     audio = load_audio_mono_16k(audio_path)
-    _, info = model.detect_language(audio)
+    _, info = model.transcribe(audio, vad_filter=False, beam_size=1)
     detected_lang = info.language
     probability = info.language_probability
 
@@ -69,7 +69,7 @@ def detect_lang_en_fr_only(audio_path: str) -> Dict[str, Any]:
     audio = load_audio_mono_16k(audio_path)
 
     # 1. Standard language detection
-    _, info = model.detect_language(audio)
+    _, info = model.transcribe(audio, vad_filter=False, beam_size=1)
     detected_lang = info.language
     probability = info.language_probability
     logger.info(f"detect: autodetect={detected_lang} p={probability:.2f}")
