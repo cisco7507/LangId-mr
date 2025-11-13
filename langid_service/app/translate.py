@@ -1,28 +1,20 @@
-# langid_service/app/translate.py
-from typing import Dict
-from loguru import logger
 from transformers import MarianMTModel, MarianTokenizer
-from .config import CT2_TRANSLATORS_CACHE
+from loguru import logger
+from .config import ALLOWED_LANGS
 
-_models: Dict[str, MarianMTModel] = {}
-_tokenizers: Dict[str, MarianTokenizer] = {}
+_models = {}
+_tokenizers = {}
 
-def _load_model(model_name: str):
-    """Lazy-loads a MarianMT model and tokenizer."""
+def _load_model(model_name):
     if model_name not in _models:
         logger.info(f"Loading translation model: {model_name}")
-        cache_dir = CT2_TRANSLATORS_CACHE or None
-        _tokenizers[model_name] = MarianTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
-        _models[model_name] = MarianMTModel.from_pretrained(model_name, cache_dir=cache_dir)
-        logger.info(f"Model {model_name} loaded.")
+        _models[model_name] = MarianMTModel.from_pretrained(model_name)
+        _tokenizers[model_name] = MarianTokenizer.from_pretrained(model_name)
     return _models[model_name], _tokenizers[model_name]
 
 def translate_en_fr_only(text: str, source_lang: str, target_lang: str) -> str:
-    """
-    Translates text between English and French.
-    """
-    if source_lang == target_lang:
-        return text
+    if source_lang not in ALLOWED_LANGS or target_lang not in ALLOWED_LANGS:
+        raise ValueError(f"Translation from '{source_lang}' to '{target_lang}' is not supported.")
 
     if source_lang == "en" and target_lang == "fr":
         model_name = "Helsinki-NLP/opus-mt-en-fr"
@@ -32,7 +24,5 @@ def translate_en_fr_only(text: str, source_lang: str, target_lang: str) -> str:
         raise ValueError(f"Translation from '{source_lang}' to '{target_lang}' is not supported.")
 
     model, tokenizer = _load_model(model_name)
-
-    # Perform translation
-    translated_tokens = model.generate(**tokenizer(text, return_tensors="pt", padding=True))
-    return tokenizer.decode(translated_tokens[0], skip_special_tokens=True)
+    translated = model.generate(**tokenizer(text, return_tensors="pt", padding=True))
+    return tokenizer.decode(translated[0], skip_special_tokens=True)

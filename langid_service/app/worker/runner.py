@@ -10,30 +10,13 @@ from ..models.models import Job, JobStatus
 from ..config import MAX_RETRIES
 from ..lang_gate import detect_lang_en_fr_only
 from ..services.detector import get_model
+from ..services.audio_io import load_audio_mono_16k
 from ..translate import translate_en_fr_only
 from ..utils import truncate_to_words
 from .. import metrics
 import threading
 
 CLAIM_LOCK = threading.Lock()
-
-def _mock_detect(file_path: str):
-    name = os.path.basename(file_path).lower()
-    if "fr" in name:
-        lang, prob = "fr", 0.95
-    elif "en" in name:
-        lang, prob = "en", 0.95
-    else:
-        lang, prob = "en", 0.6
-    return {
-        "language_raw": lang,
-        "language_mapped": lang if lang in ("en","fr") else "unknown",
-        "probability": float(prob),
-        "transcript_snippet": None,
-        "processing_ms": 1,
-        "model": "mock",
-        "info": {"duration": None, "vad": True},
-    }
 
 def process_one(session: Session, job: Job) -> None:
     logger.info(f"Processing job {job.id}")
@@ -44,19 +27,32 @@ def process_one(session: Session, job: Job) -> None:
     metrics.LANGID_JOBS_RUNNING.inc()
 
     try:
-        # Detect language with EN/FR gate
-        lang_info = detect_lang_en_fr_only(job.input_path)
+        # Load audio once from disk
+        audio = load_audio_mono_16k(job.input_path)
+
+        # Detect language with EN/FR gate using the in-memory audio
+        lang_info = detect_lang_en_fr_only(audio)
         lang = lang_info["language"]
 
-        # Transcribe
+        # Transcribe the full audio clip using the chosen language
         model = get_model()
-        segments, info = model.transcribe(job.input_path, language=lang, beam_size=5, best_of=5, vad_filter=True, suppress_blank=True)
+        segments, info = model.transcribe(
+            audio,
+            language=lang,
+            beam_size=5,
+            best_of=5,
+            vad_filter=True,
+            suppress_blank=True,
+        )
         text = " ".join([s.text for s in segments])
 
         result = {
             "language": lang,
             "text": truncate_to_words(text),
-            "info": info,
+            "raw": {
+                "text": text,
+                "info": info._asdict() if hasattr(info, '_asdict') else vars(info),
+            }
         }
 
         # Translate if target language is provided
@@ -95,26 +91,12 @@ def process_one(session: Session, job: Job) -> None:
     finally:
         metrics.LANGID_JOBS_RUNNING.dec()
 
-#def work_once() -> Optional[str]:
-#    session = SessionLocal()
-#    try:
-#        metrics.LANGID_ACTIVE_WORKERS.inc()
-#        job = session.query(Job).filter(Job.status == JobStatus.queued).order_by(Job.created_at.asc()).with_for_update().first()
-#        if not job:
-#            return None
-#        process_one(session, job)
-#        return job.id
-#    finally:
-#        metrics.LANGID_ACTIVE_WORKERS.dec()
-#       session.close()
 def work_once() -> Optional[str]:
     session = SessionLocal()
     try:
         metrics.LANGID_ACTIVE_WORKERS.inc()
 
-        # ---- Atomic claim section: only one thread at a time ----
         with CLAIM_LOCK:
-            # 1) find the oldest queued job
             job = (
                 session.query(Job)
                 .filter(Job.status == JobStatus.queued)
@@ -124,15 +106,12 @@ def work_once() -> Optional[str]:
             if not job:
                 return None
 
-            # 2) mark it as running *before* leaving the lock
             job.status = JobStatus.running
             job.progress = 10
             job.updated_at = datetime.now(UTC)
             session.commit()
             claimed_id = job.id
-        # ---- end atomic claim section ----
 
-        # Now process outside the lock
         process_one(session, job)
         return claimed_id
     finally:

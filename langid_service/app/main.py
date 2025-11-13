@@ -18,6 +18,7 @@ from .utils import gen_uuid, ensure_dirs, validate_upload, move_to_storage
 from .worker.runner import work_once
 from .guards import ensure_allowed
 from .lang_gate import validate_language_strict
+from .services.audio_io import load_audio_mono_16k
 
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -136,7 +137,8 @@ async def submit_job(file: UploadFile = File(...), target_lang: Optional[str] = 
 
     # Strict mode validation
     if ENFR_STRICT_REJECT:
-        validate_language_strict(str(tmp_path))
+        audio = load_audio_mono_16k(str(tmp_path))
+        validate_language_strict(audio)
 
     job_id = gen_uuid()
     stored = move_to_storage(tmp_path, job_id)
@@ -183,7 +185,8 @@ async def submit_job_by_url(payload: SubmitByUrl, target_lang: Optional[str] = N
 
         # Strict mode validation
         if ENFR_STRICT_REJECT:
-            validate_language_strict(str(tmp_file))
+            audio = load_audio_mono_16k(str(tmp_file))
+            validate_language_strict(audio)
 
         stored = move_to_storage(tmp_file, job_id)
     except Exception as e:

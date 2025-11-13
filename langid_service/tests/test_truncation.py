@@ -1,5 +1,6 @@
 # langid_service/tests/test_truncation.py
 import pytest
+import numpy as np
 from unittest.mock import patch, MagicMock
 from collections import namedtuple
 from langid_service.app.utils import truncate_to_words
@@ -17,10 +18,15 @@ def test_truncate_short_transcript():
     truncated = truncate_to_words(short_text)
     assert truncated == "one two three"
 
+@patch("langid_service.app.worker.runner.load_audio_mono_16k")
 @patch("langid_service.app.worker.runner.translate_en_fr_only")
 @patch("langid_service.app.worker.runner.get_model")
 @patch("langid_service.app.worker.runner.detect_lang_en_fr_only")
-def test_truncation_in_worker(mock_detect, mock_get_model, mock_translate, db_session):
+def test_truncation_in_worker(mock_detect, mock_get_model, mock_translate, mock_load_audio, db_session):
+    # Mock the audio loading to return a dummy array
+    dummy_audio = np.random.rand(16000 * 5)
+    mock_load_audio.return_value = dummy_audio
+
     # Mock the model's transcribe method
     mock_model = MagicMock()
     long_text = "one two three four five six seven eight nine ten eleven twelve"
@@ -55,6 +61,6 @@ def test_truncation_in_worker(mock_detect, mock_get_model, mock_translate, db_se
     # Verify that the 'text' field is truncated
     assert result["text"] == "one two three four five six seven eight nine ten ..."
 
-    # The original full text is not stored, so we don't check for it.
-    # The 'info' field is an object, so we just check that it exists.
-    assert "info" in result
+    # The 'raw' field should contain the full text
+    assert "raw" in result
+    assert result["raw"]["text"] == long_text
