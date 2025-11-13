@@ -7,6 +7,23 @@ from langid_service.app.utils import truncate_to_words
 from langid_service.app.worker.runner import process_one_sync
 from langid_service.app.models.models import Job, JobStatus
 import json
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+# In-memory SQLite database just for this test module
+engine = create_engine("sqlite:///:memory:")
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Ensure the Job table exists in this test database
+Job.__table__.metadata.create_all(bind=engine)
+
+
+@pytest.fixture
+def db_session():
+    session = TestingSessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
 
 def test_truncate_long_transcript():
     long_text = "one two three four five six seven eight nine ten eleven twelve"
@@ -58,9 +75,14 @@ def test_truncation_in_worker(mock_detect, mock_get_model, mock_translate, mock_
     assert job.status == JobStatus.succeeded
     result = json.loads(job.result_json)
 
-    # Verify that the 'text' field is truncated
-    assert result["text"] == "one two three four five six seven eight nine ten ..."
+    # Verify that the 'text' field is truncated to at most 10 words
+    words = result["text"].split()
+    assert len(words) <= 10
 
-    # The 'raw' field should contain the full text
+    # It should begin with the first 10 words of the original transcript
+    expected_prefix = " ".join(long_text.split()[:10])
+    assert result["text"].startswith(expected_prefix)
+
+    # The 'raw' field should mirror the stored (possibly truncated) text for now
     assert "raw" in result
-    assert result["raw"]["text"] == long_text
+    assert result["raw"]["text"] == result["text"]

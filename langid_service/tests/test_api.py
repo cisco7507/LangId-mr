@@ -1,16 +1,23 @@
 import pytest
+import numpy as np
 from unittest.mock import patch, MagicMock
 from langid_service.app.worker.runner import process_one_sync
 from langid_service.app.database import SessionLocal
 
-@patch("langid_service.app.worker.runner.get_model")
-def test_submit_and_detect_sync(mock_get_model, client):
+@patch("langid_service.app.worker.runner.detect_lang_en_fr_only")
+@patch("langid_service.app.worker.runner.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
+@patch("langid_service.app.main.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
+def test_submit_and_detect_sync(mock_main_load_audio, mock_runner_load_audio, mock_detect_lang, client):
     """
     Tests job submission and synchronous processing.
     """
-    mock_model = MagicMock()
-    mock_model.transcribe.return_value = ([], MagicMock(language="en", language_probability=0.9))
-    mock_get_model.return_value = mock_model
+    # Force the language gate to return a clean, high-confidence result so we
+    # don't hit the fallback path and the real Whisper model.
+    mock_detect_lang.return_value = {
+        "language": "en",
+        "probability": 0.9,
+        "method": "direct",
+    }
 
     with open("langid_service/tests/data/golden/en_1.wav", "rb") as f:
         data = {"file": ("clip_en.wav", f, "audio/wav")}
@@ -19,17 +26,20 @@ def test_submit_and_detect_sync(mock_get_model, client):
     assert r.status_code == 200, r.text
     job_id = r.json()["job_id"]
     assert r.json()["status"] == "queued"
+
     # Process the job synchronously
     db_session = SessionLocal()
     try:
         process_one_sync(job_id, db_session)
     finally:
         db_session.close()
+
     # Check the job status
     s = client.get(f"/jobs/{job_id}")
     assert s.status_code == 200
     js = s.json()
     assert js["status"] == "succeeded", f"Job failed: {js.get('error')}"
+
     # Confirm the result endpoint works
     res = client.get(f"/jobs/{job_id}/result")
     assert res.status_code == 200, res.text
@@ -37,7 +47,8 @@ def test_submit_and_detect_sync(mock_get_model, client):
     assert "language" in js
     assert "probability" in js
 
-def test_get_result_for_incomplete_job(client):
+@patch("langid_service.app.main.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
+def test_get_result_for_incomplete_job(mock_load_audio, client):
     """
     Tests that the result endpoint returns 409 for incomplete jobs.
     """
@@ -58,8 +69,9 @@ def test_get_jobs(client):
     assert "jobs" in js
     assert isinstance(js["jobs"], list)
 
+@patch("langid_service.app.main.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
 @patch("langid_service.app.worker.runner.get_model")
-def test_delete_job(mock_get_model, client):
+def test_delete_job(mock_get_model, mock_load_audio, client):
     with open("langid_service/tests/data/golden/en_1.wav", "rb") as f:
         data = {"file": ("clip_en.wav", f, "audio/wav")}
         r = client.post("/jobs", files=data)

@@ -62,8 +62,9 @@ def test_api_rejects_unsupported_target_lang():
     with pytest.raises(Exception):
         ensure_allowed("es")
 
+@patch("langid_service.app.main.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
 @patch("langid_service.app.services.detector.get_model")
-def test_api_strict_rejects_non_en_fr(mock_get_model, monkeypatch):
+def test_api_strict_rejects_non_en_fr(mock_get_model, mock_load_audio, monkeypatch):
     from fastapi.testclient import TestClient
     from langid_service.app.main import app
 
