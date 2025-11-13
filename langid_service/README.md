@@ -1,103 +1,447 @@
-# Windows Language-ID API (English vs French)
+# **LangID Service — EN/FR Gated Language Detection with VAD Retry**
+*FastAPI • Whisper • Background Workers • EN/FR Gate • VAD Retry • Windows Server Ready*
 
-Production-ready FastAPI microservice that detects whether a WAV clip is **English** or **French**.
-Backed by [faster-whisper] running locally on CPU (works on Windows). Includes:
-- REST API (submit job, check status, retrieve result)
-- Lightweight durable job queue on SQLite (no Redis/RabbitMQ needed for Windows)
-- Background worker with retries
-- Structured logging
-- Health endpoint
-- Simple Windows service run instructions (NSSM)
+---
 
-## Quick Start (Windows)
+## **Overview**
 
-1) **Install Python 3.10–3.12** (64-bit). Ensure `python` and `pip` are on PATH.
-2) In PowerShell (Run as Administrator if installing system-wide):
+**LangID-Service** is a production-ready microservice that performs **English vs French language detection** on audio files using:
+
+- **FastAPI**
+- **Faster-Whisper**
+- **Custom EN/FR gating logic**
+- **VAD-based retries**
+- **Fallback scoring**
+- **Background worker threads**
+- **Storage + DB job tracking**
+- **Windows Server–friendly deployment**
+- **Dashboard UI**
+
+This system is highly robust for:
+
+- Streaming workflows (Telestream Vantage, etc.)
+- Clear or noisy audio
+- Silence handling
+- Long/short clips
+- Incorrect Whisper autodetections (e.g., Spanish, Portuguese, etc.)
+
+---
+
+# **📦 Architecture**
+
+## **System Overview**
+
+```mermaid
+flowchart TD
+
+Client[Client: cURL / Vantage / Dashboard] --> API[FastAPI Server]
+
+API -->|Submit job (/jobs)| DB[(SQLite DB)]
+API -->|Store file| Storage[(storage/ Directory)]
+
+Worker[Background Worker Threads] --> DB
+Worker --> Storage
+Worker --> Whisper[Whisper Model]
+
+Whisper --> Gate[EN/FR Gate + VAD Retry]
+Gate --> Worker
+Worker --> DB
+
+Dashboard --> API
+
+subgraph Host
+    API
+    Worker
+    DB
+    Storage
+end
+```
+
+---
+
+# **🎧 Audio Processing Pipeline**
+
+```mermaid
+flowchart LR
+    A[Receive Audio (Upload or URL)] --> B[Save to storage/]
+    B --> C[Create Job in DB]
+    C --> D[Worker Pulls Job]
+
+    D --> E[Probe Audio Segment]
+
+    E --> F1[Whisper Autodetect]
+    F1 -->|lang in {en,fr} AND p >= threshold| G[Accept autodetect]
+
+    F1 -->|lang NOT in {en,fr}| H[Reject → VAD Retry]
+    F1 -->|p < threshold| H[Reject → VAD Retry]
+
+    H --> F2[Whisper Autodetect (VAD-cut audio)]
+    F2 -->|good| G
+
+    F2 -->|still not EN/FR| I[Fallback Scoring]
+    I --> J[Pick EN vs FR]
+
+    G & J --> K[Transcription Snippet Extraction]
+    K --> L[Store Result in DB]
+    L --> M[API Returns Result]
+```
+
+---
+
+# **📂 Repository Structure**
+
+```
+langid_service/
+├── app/
+│   ├── main.py
+│   ├── worker/
+│   ├── services/
+│   ├── lang_gate.py
+│   ├── models/
+│   ├── maintenance/
+│   ├── utils.py
+│   ├── metrics.py
+│   └── ...
+├── dashboard/
+├── .env.example
+├── requirements.txt
+└── run_server.py
+```
+
+---
+
+# **⚙️ Components**
+
+## **FastAPI Application (`app/main.py`)**
+
+Handles:
+
+- job submission (upload + URL)
+- job querying
+- result retrieval
+- worker thread startup
+
+---
+
+## **Worker (`app/worker/runner.py`)**
+
+Each worker:
+
+- pulls jobs
+- loads Whisper model (cached)
+- runs EN/FR detection pipeline
+- stores results in SQLite
+
+---
+
+## **Detector (`services/detector.py`)**
+
+Responsible for:
+
+- Faster-Whisper inference
+- transcript extraction
+- autodetected language
+- VAD support
+- metadata reporting
+
+---
+
+## **EN/FR Gate (`lang_gate.py`)**
+
+Core logic:
+
+1. Whisper autodetects language + probability  
+2. Reject if:
+   - not EN/FR  
+   - below probability threshold (`LANG_DETECT_MIN_PROB`)
+3. Retry with VAD-processed audio  
+4. If still not EN/FR:
+   - run fallback scoring (EN vs FR)
+5. Return final EN/FR decision
+
+---
+
+## **Storage (`storage/`)**
+
+Holds uploaded or downloaded audio files.
+
+---
+
+## **SQLite DB**
+
+Tracks job states:
+
+- queued
+- processing
+- done
+- failed
+
+File:  
+```
+langid.sqlite
+```
+
+---
+
+# **🧪 API Endpoints**
+
+## **Submit File**
+
+```bash
+curl -F "file=@audio.wav" http://localhost:8080/jobs
+```
+
+---
+
+## **Submit URL**
+
+```bash
+curl -X POST http://localhost:8080/jobs/by-url \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/audio.mp3"}'
+```
+
+---
+
+## **Check Job**
+
+```bash
+curl http://localhost:8080/jobs/<id>
+```
+
+---
+
+## **Get Result**
+
+```bash
+curl http://localhost:8080/jobs/<id>/result
+```
+
+---
+
+# **🗄 Environment Variables (.env.example)**
+
+| Variable | Description |
+|----------|-------------|
+| `WHISPER_MODEL_SIZE` | tiny/base/small/medium/large-v3 |
+| `WHISPER_DEVICE` | cpu / cuda |
+| `WHISPER_COMPUTE` | float32 / float16 / int8 |
+| `MAX_UPLOAD_BYTES` | upload limit |
+| `MAX_WORKERS` | number of worker threads |
+| `DB_URL` | SQLite or external DSN |
+| `STORAGE_DIR` | audio storage directory |
+| `LANG_DETECT_MIN_PROB` | min autodetection probability |
+| `ENFR_STRICT_REJECT` | restrict only EN/FR if true |
+
+---
+
+# **💠 Windows Server Installation**
+
+This project is fully optimized for **Windows Server 2016/2019/2022**.
+
+---
+
+## **1. Install Python 3.12**
+
+Download from:  
+https://www.python.org/downloads/windows/
+
+Enable during install:
+
+- Add to PATH  
+- Install pip  
+- Disable path length limit  
+
+---
+
+## **2. Create virtual environment**
+
 ```powershell
-cd .\langid_service
+cd C:\LangId
 python -m venv .venv
-. .\.venv\Scripts\Activate.ps1
+.venv\Scripts\activate
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
-3) **Run the API** (first run downloads the Whisper model):
-```powershell
-uvicorn app.main:app --host 0.0.0.0 --port 8080
-```
-Open http://localhost:8080/docs for interactive docs.
 
-### Submit a job
+---
+
+## **3. Install FFmpeg**
+
+```powershell
+choco install ffmpeg -y
+```
+
+Or install manually and add to PATH.
+
+---
+
+## **4. Install NSSM**
+
+Place `nssm.exe` in:
+
+```
+C:\Tools\nssm\nssm.exe
+```
+
+Add to PATH:
+
+```powershell
+setx PATH "$env:PATH;C:\Tools\nssm" -m
+```
+
+---
+
+## **5. Install LangID API as a Windows service**
+
+```powershell
+nssm install LangIdAPI "C:\LangId\.venv\Scripts\python.exe" "C:\LangId\run_server.py"
+nssm set LangIdAPI AppDirectory "C:\LangId"
+nssm start LangIdAPI
+```
+
+---
+
+# **♻️ Scheduled Maintenance Tasks (Windows Task Scheduler)**
+
+The project includes:
+
+- DB purge script  
+- Storage purge capability  
+
+---
+
+## **1. Purge Storage Script** (`purge-storage.ps1`)
+
+```powershell
+$storage = "C:\LangId\storage"
+Get-ChildItem $storage -Recurse | Remove-Item -Force -Recurse
+```
+
+---
+
+## **2. Purge Database**
+
+```powershell
+python C:\LangId\langid_service\app\maintenance\purge_db.py
+```
+
+---
+
+## **3. Register Daily Cleanup Task**
+
+```powershell
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "C:\LangId\purge-storage.ps1"
+$trigger = New-ScheduledTaskTrigger -Daily -At 3am
+Register-ScheduledTask -TaskName "PurgeLangIDStorage" -Action $action -Trigger $trigger -RunLevel Highest
+```
+
+---
+
+# **🧹 Manual Cleanup**
+
+## **Purge Storage Directory**
+
 ```bash
-curl -F "file=@path\to\audio.wav" http://localhost:8080/jobs
-```
-Response:
-```json
-{"job_id":"<uuid>","status":"queued"}
+rm -rf storage/*
 ```
 
-### Check status
+## **Purge Database**
+
 ```bash
-curl http://localhost:8080/jobs/<uuid>
+python langid_service/app/maintenance/purge_db.py
 ```
 
-### Get result
+---
+
+# **📊 Metrics**
+
+Located in:
+
+```
+app/metrics.py
+```
+
+Exposes:
+
+- job counters  
+- average worker latency  
+- VAD retries  
+- fallback gate activations  
+
+---
+
+# **🌐 Dashboard**
+
+Located in:
+
+```
+dashboard/
+```
+
+Build:
+
 ```bash
-curl http://localhost:8080/jobs/<uuid>/result
+npm install
+npm run build
 ```
 
-## Windows Service (Optional)
+---
 
-Use [NSSM](https://nssm.cc/) to run as a service:
+# **🔧 Development**
 
-- **Path:** `C:\full\path\to\langid_service\.venv\Scripts\uvicorn.exe`
-- **Arguments:** `app.main:app --host 0.0.0.0 --port 8080`
-- **Startup directory:** `C:\full\path\to\langid_service`
+## **Start API with Hot Reload**
 
-Ensure the service account has write access to `storage\` and `logs\`.
-
-## Notes
-
-- The detector uses `faster-whisper` **small** model by default. You can switch models in `app/services/detector.py`.
-- CPU-only works fine for language ID; GPU is optional.
-- Only English vs French are reported; other languages are mapped to `unknown`.
-
-## API Summary
-
-- `POST /jobs` — upload a `.wav` file (or remote URL), enqueues a job
-- `GET /jobs/{job_id}` — get status (`queued`, `running`, `succeeded`, `failed`), progress, timestamps
-- `GET /jobs/{job_id}/result` — get detection result (language, probability, optional transcript snippet)
-- `GET /healthz` — health check
-- `GET /metrics` — minimal metrics JSON
-
-Enjoy!
-
-
-## Run as Windows Service (NSSM)
-
-1. Install NSSM and ensure `nssm.exe` is in PATH.
-2. From PowerShell (as Admin):
-
-```powershell
-cd .\langid_service\scripts\windows
-.
-ssm_install.ps1 -ServiceName LangIdAPI -Port 8080 -PythonVenv "$PWD\..\..\.venv" -AppDir "$PWD\..\.."
+```bash
+python -m uvicorn langid_service.app.main:app --reload --host 0.0.0.0 --port 8080
 ```
 
-To remove:
+---
 
-```powershell
-.
-ssm_uninstall.ps1 -ServiceName LangIdAPI
+# **🐛 Troubleshooting**
+
+### **Whisper returns wrong language**
+Check:
+
+- audio length
+- noise
+- foreign language → fallback will override
+
+### **Empty transcript**
+Likely:
+
+- VAD removed entire signal  
+- Silence in audio  
+- Corrupt MP3  
+
+### **Workers not running**
+Check:
+
+```bash
+python -m uvicorn langid_service.app.main:app
 ```
 
-## CI (GitHub Actions)
+Look for logs related to:
 
-A ready-to-use workflow is included at `.github/workflows/ci.yml`. It runs pytest on **windows-latest** with the detector mocked (no model download). Set `USE_MOCK_DETECTOR=0` to run the real model in your own runners.
+- FFmpeg missing  
+- Missing Python modules  
+- Permission issues  
 
-## Testing locally
+---
 
-```powershell
-# In repo root:
-cd .\langid_service
-pytest
-```
+# **🚀 Conclusion**
+
+This README provides:
+
+- complete architecture  
+- full processing pipeline  
+- EN/FR gating logic + VAD retry  
+- Windows Server deployment  
+- service installation  
+- scheduled maintenance  
+- API documentation  
+- developer workflows  
+- troubleshooting  
+
+Your LangID service is now fully documented and production-ready.
 
