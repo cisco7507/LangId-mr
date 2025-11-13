@@ -36,7 +36,13 @@ def process_one(session: Session, job: Job) -> None:
         lang = lang_info["language"]
 
         # Extract language probability from gate output (fallback to 0.0 if missing)
-        prob = float(lang_info.get("language_probability", lang_info.get("probability", 0.0)))
+        raw_prob = lang_info.get("language_probability")
+        if raw_prob is None:
+            raw_prob = lang_info.get("probability")
+        try:
+            prob = float(raw_prob) if raw_prob is not None else 0.0
+        except (TypeError, ValueError):
+            prob = 0.0
 
         # Decide whether to use VAD based on configured minimum probability
         use_vad = prob < LANG_DETECT_MIN_PROB
