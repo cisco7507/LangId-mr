@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from loguru import logger
 from ..database import SessionLocal
 from ..models.models import Job, JobStatus
-from ..config import MAX_RETRIES
+from ..config import MAX_RETRIES, LANG_DETECT_MIN_PROB
 from ..lang_gate import detect_lang_en_fr_only
 from ..services.detector import get_model
 from ..services.audio_io import load_audio_mono_16k
@@ -17,6 +17,7 @@ from .. import metrics
 import threading
 
 CLAIM_LOCK = threading.Lock()
+SNIPPET_MAX_SECONDS = 15.0  # only transcribe the first N seconds for snippet
 
 def process_one(session: Session, job: Job) -> None:
     logger.info(f"Processing job {job.id}")
@@ -34,24 +35,53 @@ def process_one(session: Session, job: Job) -> None:
         lang_info = detect_lang_en_fr_only(audio)
         lang = lang_info["language"]
 
-        # Transcribe the full audio clip using the chosen language
+        # Extract language probability from gate output (fallback to 0.0 if missing)
+        prob = float(lang_info.get("language_probability", lang_info.get("probability", 0.0)))
+
+        # Decide whether to use VAD based on configured minimum probability
+        use_vad = prob < LANG_DETECT_MIN_PROB
+
+        # Transcribe only the first SNIPPET_MAX_SECONDS of audio for the snippet
+        snippet_samples = int(SNIPPET_MAX_SECONDS * 16000)  # 16 kHz mono
+        snippet_audio = audio[:snippet_samples]
+
         model = get_model()
         segments, info = model.transcribe(
-            audio,
+            snippet_audio,
             language=lang,
             beam_size=5,
             best_of=5,
-            vad_filter=True,
+            vad_filter=use_vad,
             suppress_blank=True,
         )
         text = " ".join([s.text for s in segments])
+        # Extract only the first 10 spoken words
+        snippet = " ".join(text.split()[:10])
+
+        # Make info JSON-serializable (TranscriptionOptions and other objects may be present)
+        if hasattr(info, "_asdict"):
+            raw_info = info._asdict()
+        else:
+            raw_info = {}
+            for k, v in vars(info).items():
+                try:
+                    # keep primitives / simple containers as-is
+                    json.dumps(v)
+                    raw_info[k] = v
+                except TypeError:
+                    # fall back to string for non-serializable objects
+                    raw_info[k] = str(v)
+
+        # Drop noisy/verbose fields we don't need to store
+        raw_info.pop("transcription_options", None)
 
         result = {
             "language": lang,
-            "text": truncate_to_words(text),
+            "probability": prob,
+            "text": snippet,
             "raw": {
-                "text": text,
-                "info": info._asdict() if hasattr(info, '_asdict') else vars(info),
+                "text": snippet,
+                "info": raw_info,
             }
         }
 

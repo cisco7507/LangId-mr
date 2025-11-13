@@ -1,7 +1,11 @@
 # langid_service/app/config.py
-from pathlib import Path
-import os
 from typing import Set
+import os
+import logging
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def _get_env_boolean(var_name: str, default: bool) -> bool:
     """Helper to read boolean env vars."""

@@ -1,5 +1,5 @@
 # langid_service/app/metrics.py
-from prometheus_client import CollectorRegistry, Counter, Histogram
+from prometheus_client import CollectorRegistry, Gauge, Counter,Histogram
 
 REGISTRY = CollectorRegistry()
 
@@ -10,7 +10,7 @@ LANGID_JOBS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
-LANGID_JOBS_RUNNING = Counter(
+LANGID_JOBS_RUNNING = Gauge(
     "langid_jobs_running",
     "Number of jobs currently running",
     registry=REGISTRY,
@@ -22,10 +22,9 @@ LANGID_PROCESSING_SECONDS = Histogram(
     registry=REGISTRY,
 )
 
-LANGID_ACTIVE_WORKERS = Counter(
+LANGID_ACTIVE_WORKERS = Gauge(
     "langid_active_workers",
     "Number of active worker threads",
-    registry=REGISTRY,
 )
 
 LANGID_AUDIO_SECONDS = Histogram(

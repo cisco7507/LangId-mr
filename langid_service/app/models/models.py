@@ -23,3 +23,4 @@ class Job(Base):
     error: Mapped[str] = mapped_column(Text, nullable=True)
     # JSON string with detection outputs
     result_json: Mapped[str] = mapped_column(Text, nullable=True)
+    target_lang = Column(String(5), nullable=True)

@@ -10,11 +10,11 @@ from langid_service.app import metrics as m
 # IMPORTANT: set mock before importing app so workers inherit it
 os.environ["USE_MOCK_DETECTOR"] = "1"
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]  # project root
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.main import app  # noqa: E402
+from langid_service.app.main import app  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def fresh_metrics_registry(monkeypatch):
