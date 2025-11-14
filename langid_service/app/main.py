@@ -8,13 +8,17 @@ from loguru import logger
 from sqlalchemy.orm import Session
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from .metrics import REGISTRY
+from typing import Optional
 
-from .config import LOG_DIR, MAX_WORKERS, WHISPER_MODEL_SIZE, MAX_FILE_SIZE_MB
+from .config import LOG_DIR, MAX_WORKERS, WHISPER_MODEL_SIZE, MAX_FILE_SIZE_MB, ENFR_STRICT_REJECT
 from .database import Base, engine, SessionLocal
 from .models.models import Job, JobStatus
 from .schemas import EnqueueResponse, JobStatusResponse, ResultResponse, SubmitByUrl, JobListResponse, DeleteJobsRequest
 from .utils import gen_uuid, ensure_dirs, validate_upload, move_to_storage
 from .worker.runner import work_once
+from .guards import ensure_allowed
+from .lang_gate import validate_language_strict
+from .services.audio_io import load_audio_mono_16k
 
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -83,6 +87,91 @@ def prometheus_metrics():
     data = generate_latest(REGISTRY)
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
+
+@app.get("/metrics/json")
+def metrics_json():
+    """Return key service metrics in a JSON-friendly shape for the dashboard.
+
+    This endpoint intentionally exposes a small, stable subset of metrics so
+    the React dashboard can display stats without needing to parse the
+    Prometheus text format.
+    """
+    session = SessionLocal()
+    try:
+        total = session.query(Job).count()
+
+        by_status = {
+            status.value: session.query(Job).filter(Job.status == status).count()
+            for status in JobStatus
+        }
+
+        running = by_status.get(JobStatus.running.value, 0)
+        queued = by_status.get(JobStatus.queued.value, 0)
+
+        # Jobs completed in the last 5 minutes
+        now = datetime.now(UTC)
+        five_minutes_ago = now - timedelta(minutes=5)
+        recent_completed_5m = (
+            session.query(Job)
+            .filter(
+                Job.status == JobStatus.succeeded,
+                Job.updated_at >= five_minutes_ago,
+            )
+            .count()
+        )
+
+        # Average processing time over the last 50 succeeded jobs.
+        # Prefer the explicit processing_ms field in result_json when available,
+        # and fall back to created_at/updated_at timing otherwise.
+        last_50_succeeded = (
+            session.query(Job)
+            .filter(Job.status == JobStatus.succeeded)
+            .order_by(Job.updated_at.desc())
+            .limit(50)
+            .all()
+        )
+
+        durations = []
+        for job in last_50_succeeded:
+            # Try to read processing_ms from result_json
+            processing_seconds_from_json = None
+            if job.result_json:
+                try:
+                    payload = json.loads(job.result_json)
+                    processing_ms = payload.get("processing_ms")
+                    if isinstance(processing_ms, (int, float)) and processing_ms >= 0:
+                        processing_seconds_from_json = processing_ms / 1000.0
+                except Exception:
+                    # If result_json is malformed, ignore and fall back to timestamps
+                    processing_seconds_from_json = None
+
+            if processing_seconds_from_json is not None:
+                durations.append(processing_seconds_from_json)
+            elif job.updated_at and job.created_at:
+                durations.append((job.updated_at - job.created_at).total_seconds())
+
+        avg_processing = sum(durations) / len(durations) if durations else 0.0
+
+        metrics = {
+            "jobs": {
+                "total": total,
+                "by_status": by_status,
+                "running": running,
+                "queued": queued,
+                "recent_completed_5m": recent_completed_5m,
+            },
+            "workers": {
+                "configured": MAX_WORKERS,
+            },
+            "timing": {
+                "avg_processing_seconds_last_50": avg_processing,
+            },
+        }
+
+        return JSONResponse(content=metrics)
+    finally:
+        session.close()
+
 @app.get("/jobs", response_model=JobListResponse)
 def get_jobs():
     session = SessionLocal()
@@ -95,6 +184,10 @@ def get_jobs():
             created_at=job.created_at,
             updated_at=job.updated_at,
             attempts=job.attempts,
+            filename=Path(job.input_path).name if job.input_path else None,
+            original_filename=job.original_filename,
+            language=(json.loads(job.result_json).get("language") if job.result_json else None),
+            probability=(json.loads(job.result_json).get("probability") if job.result_json else None),
             error=job.error,
         ) for job in jobs])
     finally:
@@ -113,7 +206,11 @@ def delete_jobs(payload: DeleteJobsRequest):
         session.close()
 
 @app.post("/jobs", response_model=EnqueueResponse)
-async def submit_job(file: UploadFile = File(...)):
+async def submit_job(file: UploadFile = File(...), target_lang: Optional[str] = None):
+    # Validate target language
+    if target_lang:
+        ensure_allowed(target_lang)
+
     # Validate upload
     raw = await file.read()
     try:
@@ -127,6 +224,11 @@ async def submit_job(file: UploadFile = File(...)):
         tmp.flush()
         tmp_path = Path(tmp.name)
 
+    # Strict mode validation
+    if ENFR_STRICT_REJECT:
+        audio = load_audio_mono_16k(str(tmp_path))
+        validate_language_strict(audio)
+
     job_id = gen_uuid()
     stored = move_to_storage(tmp_path, job_id)
     logger.info(f"Enqueued upload for job {job_id}: {stored}")
@@ -134,7 +236,13 @@ async def submit_job(file: UploadFile = File(...)):
     # Persist job
     session = SessionLocal()
     try:
-        job = Job(id=job_id, status=JobStatus.queued, input_path=str(stored))
+        job = Job(
+            id=job_id,
+            status=JobStatus.queued,
+            input_path=str(stored),
+            original_filename=file.filename,
+            target_lang=target_lang,
+        )
         session.add(job)
         session.commit()
     finally:
@@ -143,7 +251,11 @@ async def submit_job(file: UploadFile = File(...)):
     return EnqueueResponse(job_id=job_id, status="queued")
 
 @app.post("/jobs/by-url", response_model=EnqueueResponse)
-async def submit_job_by_url(payload: SubmitByUrl):
+async def submit_job_by_url(payload: SubmitByUrl, target_lang: Optional[str] = None):
+    # Validate target language
+    if target_lang:
+        ensure_allowed(target_lang)
+
     # Simple URL fetch (no auth) — for production, prefer signed URLs or internal sources.
     import urllib.request
     job_id = gen_uuid()
@@ -165,6 +277,12 @@ async def submit_job_by_url(payload: SubmitByUrl):
                 f.write(response.read())
 
         validate_upload(str(tmp_file), tmp_file.stat().st_size)
+
+        # Strict mode validation
+        if ENFR_STRICT_REJECT:
+            audio = load_audio_mono_16k(str(tmp_file))
+            validate_language_strict(audio)
+
         stored = move_to_storage(tmp_file, job_id)
     except Exception as e:
         if tmp_file.exists():
@@ -173,7 +291,15 @@ async def submit_job_by_url(payload: SubmitByUrl):
 
     session = SessionLocal()
     try:
-        job = Job(id=job_id, status=JobStatus.queued, input_path=str(stored))
+        # Use the last path segment of the URL as a best-effort original filename
+        original_filename = Path(url).name or None
+        job = Job(
+            id=job_id,
+            status=JobStatus.queued,
+            input_path=str(stored),
+            original_filename=original_filename,
+            target_lang=target_lang,
+        )
         session.add(job)
         session.commit()
     finally:
@@ -195,6 +321,10 @@ def get_status(job_id: str):
             created_at=job.created_at,
             updated_at=job.updated_at,
             attempts=job.attempts,
+            filename=Path(job.input_path).name if job.input_path else None,
+            original_filename=job.original_filename,
+            language=(json.loads(job.result_json).get("language") if job.result_json else None),
+            probability=(json.loads(job.result_json).get("probability") if job.result_json else None),
             error=job.error,
         )
     finally:
@@ -210,17 +340,17 @@ def get_result(job_id: str):
         if job.status != JobStatus.succeeded or not job.result_json:
             raise HTTPException(status_code=409, detail=f"Job not completed (status={job.status.value})")
         raw = json.loads(job.result_json)
-        # The raw dict is the full, original result.
-        # We also promote a few key fields to the top level for convenience.
-        # To avoid duplication, we can pop them from the raw dict.
-        transcript_snippet = raw.pop("transcript_snippet", None)
+        # The worker stores the main result in the 'text' field.
+        # We'll use this for the top-level snippet.
+        transcript_snippet = raw.get("text")
 
         return ResultResponse(
             job_id=job.id,
-            language=raw.get("language_mapped", "unknown"),
-            probability=raw.get("probability", 0.0),
+            language=raw.get("language", "unknown"),
+            probability=raw.get("probability", 0.0), # Note: worker doesn't set this field
             transcript_snippet=transcript_snippet,
             processing_ms=raw.get("processing_ms", 0),
+            original_filename=job.original_filename,
             raw=raw,
         )
     finally:

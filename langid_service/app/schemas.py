@@ -13,6 +13,10 @@ class JobStatusResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     attempts: int
+    filename: Optional[str] = None
+    original_filename: Optional[str] = None
+    language: Optional[str] = None
+    probability: Optional[float] = None
     error: Optional[str] = None
 
 class ResultResponse(BaseModel):
@@ -21,6 +25,7 @@ class ResultResponse(BaseModel):
     probability: float
     transcript_snippet: Optional[str] = None
     processing_ms: int
+    original_filename: Optional[str] = None
     raw: dict
 
 class SubmitByUrl(BaseModel):

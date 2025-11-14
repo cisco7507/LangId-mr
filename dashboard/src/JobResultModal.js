@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useMemo } from "react";
+import PipelineDocsModal from "./PipelineDocsModal";
 import { API_BASE } from "./config";
 
 export default function JobResultModal({ jobResult, onClose }) {
@@ -6,6 +7,19 @@ export default function JobResultModal({ jobResult, onClose }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
+  const [showPipelineDocs, setShowPipelineDocs] = useState(false);
+
+  const derived = useMemo(() => {
+    if (!result) return null;
+    const language = result.language ?? "unknown";
+    const probability = typeof result.probability === "number" ? result.probability : null;
+    const processingMs = result.processing_ms;
+    const transcript = result.transcript_snippet;
+    const raw = result.raw ?? null;
+    const originalFilename = result.original_filename ?? null;
+    return { language, probability, processingMs, transcript, raw, originalFilename };
+  }, [result]);
 
   // Fetch result when a (new) job arrives
   useEffect(() => {
@@ -64,23 +78,174 @@ export default function JobResultModal({ jobResult, onClose }) {
   }, [jobResult, onClose]);
 
   if (!jobResult) return null;
-
   const title = error ? "Job Result (Error)" : "Job Result";
 
+  const languageBadge = derived && (
+    <LanguageBadge language={derived.language} />
+  );
+
   return (
-    <div className="fixed inset-0 bg-gray-600/50 flex items-center justify-center" role="dialog" aria-modal="true">
-      <div ref={modalRef} className="relative mx-auto p-5 border w-11/12 md:w-1/2 lg:w-1/3 shadow-lg rounded-md bg-white">
-        <div className="mt-3 text-center">
-          <h3 className="text-lg leading-6 font-medium text-gray-900">{title}</h3>
-          <div className="mt-2 px-7 py-3">
-            <pre className="whitespace-pre-wrap break-words text-left bg-gray-50 rounded p-3 text-sm">
-              {loading ? "Loading…" : error ? error : JSON.stringify(result, null, 2)}
-            </pre>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        ref={modalRef}
+        className="relative mx-auto w-11/12 max-w-2xl rounded-xl border border-slate-700 bg-slate-900/95 p-5 shadow-2xl"
+      >
+        <div className="mt-1 text-left">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-semibold text-slate-50">{title}</h3>
+              <p className="mt-1 text-xs text-slate-400">
+                Click anywhere outside or press Escape to close.
+              </p>
+            </div>
+            {languageBadge}
           </div>
-          <div className="items-center px-4 py-3">
+
+          {/* Main content */}
+          <div className="mt-4 space-y-4">
+            {/* Loading / error state */}
+            {loading && (
+              <div className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200">
+                Loading result…
+              </div>
+            )}
+
+            {error && !loading && (
+              <div className="rounded-md border border-rose-500/60 bg-rose-950/60 px-3 py-2 text-xs text-rose-100">
+                {error}
+              </div>
+            )}
+
+            {derived && !loading && !error && (
+              <>
+                {/* Summary row */}
+                <div className="grid gap-3 md:grid-cols-4">
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/80 p-3">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                      Job ID
+                    </p>
+                    <p className="mt-1 truncate font-mono text-xs text-slate-100">
+                      {result.job_id}
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/80 p-3">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                      File
+                    </p>
+                    <p
+                      className="mt-1 truncate text-xs text-slate-100"
+                      title={derived.originalFilename || result.job_id}
+                    >
+                      {derived.originalFilename || "—"}
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/80 p-3">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                      Probability
+                    </p>
+                    <div className="mt-1 flex items-center justify-between text-xs text-slate-100">
+                      <span>
+                        {derived.probability != null
+                          ? `${(derived.probability * 100).toFixed(1)}%`
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+                      <div
+                        className="h-1.5 rounded-full bg-gradient-to-r from-emerald-400 to-sky-400"
+                        style={{
+                          width:
+                            derived.probability != null
+                              ? `${Math.max(0, Math.min(100, derived.probability * 100))}%`
+                              : "0%",
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/80 p-3">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                      Processing time
+                    </p>
+                    <p className="mt-1 text-xs text-slate-100">
+                      {derived.processingMs != null
+                        ? `${(derived.processingMs / 1000).toFixed(2)} s`
+                        : "—"}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Transcript snippet */}
+                {derived.transcript && (
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/90 p-3">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                      Transcript snippet
+                    </p>
+                    <p className="mt-1 text-sm text-slate-100">
+                      {derived.transcript}
+                    </p>
+                  </div>
+                )}
+
+                {/* Raw JSON toggle */}
+                {derived.raw && (
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/70">
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-900/70"
+                      onClick={() => setShowRaw((prev) => !prev)}
+                    >
+                      <span>Raw model output</span>
+                      <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                        {showRaw ? "Hide" : "Show"}
+                      </span>
+                    </button>
+                    {showRaw && (
+                      <div className="max-h-72 overflow-auto border-t border-slate-800 px-3 py-2 text-[11px] leading-relaxed text-slate-100 space-y-2">
+                        <div className="rounded-md bg-slate-900/70 p-2 text-[10px] text-slate-200">
+                          <p className="mb-1 font-semibold text-slate-100">How to read this JSON</p>
+                          <ul className="list-disc space-y-0.5 pl-4">
+                            <li><span className="font-mono">language</span>: ISO language code predicted for the audio (e.g. <span className="font-mono">"en"</span>, <span className="font-mono">"fr"</span>).</li>
+                            <li><span className="font-mono">probability</span>: Confidence for <span className="font-mono">language</span>, from 0 to 1.</li>
+                            <li><span className="font-mono">text</span>: Transcript snippet of what was detected in the audio.</li>
+                            <li><span className="font-mono">raw.text</span>: Full transcript returned by the underlying model.</li>
+                            <li><span className="font-mono">raw.info.language</span>: Language code reported by the model internals.</li>
+                            <li><span className="font-mono">raw.info.language_probability</span>: Confidence for that internal language, from 0 to 1.</li>
+                            <li><span className="font-mono">raw.info.duration</span>: Total audio duration in seconds.</li>
+                            <li><span className="font-mono">raw.info.duration_after_vad</span>: Duration after voice activity detection (speech-only part) in seconds.</li>
+                            <li><span className="font-mono">raw.info.all_language_probs</span>: If present, probability distribution over all candidate languages.</li>
+                            <li><span className="font-mono">raw.info.vad_options</span>: Voice activity detection parameters used for this run (if any).</li>
+                            <li><span className="font-mono">translated</span>: Whether a translation step was applied on top of the original audio.</li>
+                          </ul>
+                          <button
+                            type="button"
+                            className="mt-2 text-[10px] font-medium text-emerald-300 underline hover:text-emerald-200"
+                            onClick={() => setShowPipelineDocs(true)}
+                          >
+                            Open full pipeline documentation
+                          </button>
+                        </div>
+                        <pre className="whitespace-pre-wrap break-words font-mono">
+                          {JSON.stringify(derived.raw, null, 2)}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="mt-4 flex justify-end gap-2 px-1">
             <button
               id="ok-btn"
-              className="px-4 py-2 bg-blue-500 text-white text-base font-medium rounded-md w-full shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
+              className="rounded-md bg-slate-100 px-4 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
               onClick={onClose}
             >
               Close
@@ -88,6 +253,27 @@ export default function JobResultModal({ jobResult, onClose }) {
           </div>
         </div>
       </div>
+      <PipelineDocsModal open={showPipelineDocs} onClose={() => setShowPipelineDocs(false)} />
     </div>
+  );
+}
+
+function LanguageBadge({ language }) {
+  let label = "Unknown";
+  let classes = "bg-slate-700 text-slate-50";
+
+  if (language === "en") {
+    label = "English";
+    classes = "bg-emerald-500/20 text-emerald-200 border border-emerald-500/40";
+  } else if (language === "fr") {
+    label = "French";
+    classes = "bg-sky-500/20 text-sky-200 border border-sky-500/40";
+  }
+
+  return (
+    <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${classes}`}>
+      <span className="mr-1 inline-block h-2 w-2 rounded-full bg-current" />
+      {label}
+    </span>
   );
 }

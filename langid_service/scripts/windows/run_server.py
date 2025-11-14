@@ -13,6 +13,7 @@ if __name__ == "__main__":
         host=host,
         port=port,
         log_level="info",
+        reload=True,
         # You can also tune workers here if you prefer uvicorn's workers
         # but you already have internal worker threads for jobs.
     )

@@ -1,0 +1,81 @@
+name: CI Windows
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+
+    env:
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install backend dependencies
+        working-directory: ./langid_service
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run backend tests
+        working-directory: ./langid_service
+        run: |
+          pytest
+
+      - name: Install dashboard dependencies
+        working-directory: ./dashboard
+        run: |
+          npm ci
+
+      - name: Run dashboard build
+        working-directory: ./dashboard
+        run: |
+          npm run build
+
+      - name: Run install script (dry run)
+        shell: pwsh
+        working-directory: ./dashboard
+        run: |
+          Write-Host "==> Simulating Install-LangIdDashboard.ps1 on CI" -ForegroundColor Cyan
+          # Create a fake build folder so the script passes its initial validation.
+          $dashDir = "C:\LangId\dashboard"
+          New-Item -ItemType Directory -Force -Path $dashDir | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $dashDir "build") | Out-Null
+
+          # Create a dummy nssm.exe so the script can "find" it without actually installing a service.
+          $nssmDir = "C:\nssm"
+          New-Item -ItemType Directory -Force -Path $nssmDir | Out-Null
+          $nssmExe = Join-Path $nssmDir "nssm.exe"
+          Set-Content -Path $nssmExe -Value "@echo off`necho nssm stub" -Encoding Ascii
+
+          # The script will call NSSM; override NssmPath so we hit the stub, and
+          # point DashboardDir to our fake build directory. Use a high, unused port.
+          pwsh -File .\launch-script\Install-LangIdDashboard.ps1 -DashboardDir $dashDir -Port 3999 -NssmPath $nssmExe
+
+      - name: Run uninstall script (dry run)
+        shell: pwsh
+        working-directory: ./dashboard
+        run: |
+          Write-Host "==> Simulating Uninstall-LangIdDashboard.ps1 on CI" -ForegroundColor Cyan
+          $nssmDir = "C:\nssm"
+          $nssmExe = Join-Path $nssmDir "nssm.exe"
+          if (-not (Test-Path $nssmExe)) {
+            Set-Content -Path $nssmExe -Value "@echo off`necho nssm stub" -Encoding Ascii
+          }
+          pwsh -File .\launch-script\Uninstall-LangIdDashboard.ps1 -NssmPath $nssmExe

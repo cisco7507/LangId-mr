@@ -1,49 +1,48 @@
-import io
-import wave
-import struct
-import math
 import pytest
+import numpy as np
+from pathlib import Path
+from unittest.mock import patch, MagicMock
 from langid_service.app.worker.runner import process_one_sync
 from langid_service.app.database import SessionLocal
 
-def make_tone_wav(duration_s=0.3, freq_hz=440.0, rate=16000):
-    """Generate a small in-memory WAV tone (sine wave)."""
-    samples = int(duration_s * rate)
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(rate)
-        for i in range(samples):
-            v = int(32767.0 * math.sin(2 * math.pi * freq_hz * i / rate))
-            wf.writeframesraw(struct.pack("<h", v))
-    wf.close()
-    buf.seek(0)
-    return buf
+TEST_DATA_DIR = Path(__file__).parent / "data" / "golden"
 
-def test_submit_and_detect_sync(client):
+@patch("langid_service.app.worker.runner.detect_lang_en_fr_only")
+@patch("langid_service.app.worker.runner.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
+@patch("langid_service.app.main.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
+def test_submit_and_detect_sync(mock_main_load_audio, mock_runner_load_audio, mock_detect_lang, client):
     """
     Tests job submission and synchronous processing.
     """
-    # Create a small valid wav buffer
-    wav_buf = make_tone_wav()
-    data = {"file": ("clip_en.wav", wav_buf, "audio/wav")}
-    # Submit the job
-    r = client.post("/jobs", files=data)
+    # Force the language gate to return a clean, high-confidence result so we
+    # don't hit the fallback path and the real Whisper model.
+    mock_detect_lang.return_value = {
+        "language": "en",
+        "probability": 0.9,
+        "method": "direct",
+    }
+
+    with open(TEST_DATA_DIR / "en_1.wav", "rb") as f:
+        data = {"file": ("clip_en.wav", f, "audio/wav")}
+        # Submit the job
+        r = client.post("/jobs", files=data)
     assert r.status_code == 200, r.text
     job_id = r.json()["job_id"]
     assert r.json()["status"] == "queued"
+
     # Process the job synchronously
     db_session = SessionLocal()
     try:
         process_one_sync(job_id, db_session)
     finally:
         db_session.close()
+
     # Check the job status
     s = client.get(f"/jobs/{job_id}")
     assert s.status_code == 200
     js = s.json()
     assert js["status"] == "succeeded", f"Job failed: {js.get('error')}"
+
     # Confirm the result endpoint works
     res = client.get(f"/jobs/{job_id}/result")
     assert res.status_code == 200, res.text
@@ -51,15 +50,15 @@ def test_submit_and_detect_sync(client):
     assert "language" in js
     assert "probability" in js
 
-def test_get_result_for_incomplete_job(client):
+@patch("langid_service.app.main.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
+def test_get_result_for_incomplete_job(mock_load_audio, client):
     """
     Tests that the result endpoint returns 409 for incomplete jobs.
     """
-    # Create a small valid wav buffer
-    wav_buf = make_tone_wav()
-    data = {"file": ("clip_en.wav", wav_buf, "audio/wav")}
-    # Submit the job
-    r = client.post("/jobs", files=data)
+    with open(TEST_DATA_DIR / "en_1.wav", "rb") as f:
+        data = {"file": ("clip_en.wav", f, "audio/wav")}
+        # Submit the job
+        r = client.post("/jobs", files=data)
     assert r.status_code == 200, r.text
     job_id = r.json()["job_id"]
     # Check the result endpoint
@@ -73,12 +72,12 @@ def test_get_jobs(client):
     assert "jobs" in js
     assert isinstance(js["jobs"], list)
 
-def test_delete_job(client):
-    # create a small valid wav buffer
-    wav_buf = make_tone_wav()
-
-    data = {"file": ("clip_en.wav", wav_buf, "audio/wav")}
-    r = client.post("/jobs", files=data)
+@patch("langid_service.app.main.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
+@patch("langid_service.app.worker.runner.get_model")
+def test_delete_job(mock_get_model, mock_load_audio, client):
+    with open(TEST_DATA_DIR / "en_1.wav", "rb") as f:
+        data = {"file": ("clip_en.wav", f, "audio/wav")}
+        r = client.post("/jobs", files=data)
     assert r.status_code == 200, r.text
     job_id = r.json()["job_id"]
 

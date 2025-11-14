@@ -109,3 +109,4 @@ desktop.ini
     tokenizer.json
     vocabulary.txt
 storage/*
+langid_service/storage/

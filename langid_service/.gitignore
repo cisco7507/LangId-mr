@@ -15,7 +15,6 @@ __pycache__/
 venv/
 env/
 ENV/
-*.env
 *.venv
 
 # Installer + build outputs
@@ -67,8 +66,6 @@ scripts/windows/nssm.exe
 scripts/windows/launcher.bootstrap.log
 
 # Environment / secrets / credentials
-.env
-.env.*
 *.key
 *.pem
 *.crt

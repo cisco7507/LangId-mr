@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>LangID Audio Processing Pipeline</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background-color: #020617;
+        color: #e5e7eb;
+      }
+      header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid #1e293b;
+        background: radial-gradient(circle at top left, #0f766e, #020617 40%);
+      }
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 1.5rem;
+      }
+      h1 {
+        font-size: 1.75rem;
+        margin: 0;
+      }
+      h2 {
+        margin-top: 2rem;
+        font-size: 1.25rem;
+      }
+      h3 {
+        margin-top: 1.5rem;
+        font-size: 1.05rem;
+      }
+      p {
+        line-height: 1.6;
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 0.9em;
+      }
+      pre {
+        background-color: #020617;
+        border-radius: 0.5rem;
+        padding: 0.75rem 1rem;
+        overflow-x: auto;
+        border: 1px solid #1f2937;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 0.5rem;
+      }
+      th, td {
+        border: 1px solid #1f2937;
+        padding: 0.35rem 0.5rem;
+        text-align: left;
+        font-size: 0.9rem;
+      }
+      th {
+        background-color: #020617;
+      }
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 9999px;
+        padding: 0.1rem 0.5rem;
+        font-size: 0.75rem;
+        background-color: rgba(16, 185, 129, 0.1);
+        color: #6ee7b7;
+      }
+      .badge {
+        font-size: 0.7rem;
+        padding: 0.1rem 0.35rem;
+        border-radius: 9999px;
+        background-color: #111827;
+        border: 1px solid #1f2937;
+      }
+      .section-muted {
+        font-size: 0.9rem;
+        color: #9ca3af;
+      }
+      a {
+        color: #6ee7b7;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+        <div>
+          <h1>LangID Audio Processing Pipeline</h1>
+          <p class="section-muted">How your audio becomes structured JSON in the dashboard.</p>
+        </div>
+        <span class="tag">Docs snapshot for UI &amp; operators</span>
+      </div>
+    </header>
+    <main>
+      <section>
+        <h2>1. High-level overview</h2>
+        <p>
+          Each job moves through a fixed sequence of stages before you see it in the dashboard:
+        </p>
+        <div style="margin: 1.25rem 0; padding: 0.75rem 1rem; border-radius: 0.75rem; border: 1px solid #1f2937; background-color: #020617; display: flex; flex-direction: column; gap: 0.5rem;">
+          <strong style="font-size: 0.95rem;">Video walkthrough</strong>
+          <p class="section-muted" style="margin: 0 0 0.75rem 0;">
+            Watch this short video for a visual explanation of the full pipeline and EN/FR decision tree.
+          </p>
+          <video
+            controls
+            style="width: 100%; border-radius: 0.75rem; border: 1px solid #1f2937; background-color: #000;"
+          >
+            <source src="pipeline.mp4" type="video/mp4" />
+            Your browser does not support the video tag.
+          </video>
+        </div>
+        <ol>
+          <li><strong>Input</strong> – You upload audio or provide a URL.</li>
+          <li><strong>Pre-processing</strong> – Audio is decoded and normalised to mono 16 kHz.</li>
+          <li><strong>Language gate (EN/FR only)</strong> – The system decides whether the audio is English or French.</li>
+          <li><strong>Transcription</strong> – A model turns speech into text.</li>
+          <li><strong>Translation (optional)</strong> – Some deployments may translate between EN and FR.</li>
+          <li><strong>Result packaging &amp; metrics</strong> – A JSON result is stored and exposed to the API and dashboard.</li>
+        </ol>
+        <p class="section-muted">
+          The JSON shown under <code>Raw model output</code> in the dashboard is a direct view of the data produced at the
+          end of this pipeline.
+        </p>
+      </section>
+
+      <section>
+        <h2>2. Stages in more detail</h2>
+        <h3>2.1 Input</h3>
+        <p>
+          When you submit a job (<code>POST /jobs</code> or <code>/jobs/by-url</code>), the service stores the audio on disk and
+          creates a <code>Job</code> record with:
+        </p>
+        <ul>
+          <li><code>id</code> – job identifier.</li>
+          <li><code>status</code> – starts as <code>queued</code>.</li>
+          <li><code>input_path</code> – where the audio lives on disk.</li>
+          <li><code>original_filename</code> – the filename you uploaded or the URL basename.</li>
+          <li>Timestamps and a small amount of metadata.</li>
+        </ul>
+
+        <h3>2.2 Pre-processing</h3>
+        <p>
+          Audio is decoded, converted to mono and resampled to 16 kHz. We also measure its duration in seconds, which later
+          appears as <code>raw.info.duration</code>.
+        </p>
+
+        <h3>2.3 Language gate (EN/FR only)</h3>
+        <p>
+          The language gate is responsible for deciding whether your audio is English or French and how confident we are in
+          that decision. It combines:
+        </p>
+        <ul>
+          <li><strong>Direct autodetect</strong> – one pass of the model on the raw audio.</li>
+          <li><strong>Strict gating</strong> – configuration to reject non‑EN/FR clips early.</li>
+          <li><strong>VAD retry</strong> – rerun on speech‑only audio if the first attempt was uncertain.</li>
+          <li><strong>EN/FR scoring fallback</strong> – a cheap comparison between EN and FR if needed.</li>
+        </ul>
+
+        <h3>2.4 Transcription</h3>
+        <p>
+          Once the language is chosen, a transcription pass produces the full text (<code>raw.text</code>). A shorter
+          human‑friendly snippet is exposed as <code>text</code> in the JSON and shown as the transcript snippet in the
+          dashboard.
+        </p>
+
+        <h3>2.5 Optional translation</h3>
+        <p>
+          Some deployments may translate between EN and FR. If a translation step is applied, the JSON field
+          <code>translated</code> is set to <code>true</code>.
+        </p>
+
+        <h3>2.6 Result packaging &amp; metrics</h3>
+        <p>
+          The final JSON is stored with the job and served from <code>GET /jobs/&lt;job_id&gt;/result</code>. At the same time,
+          metrics are updated to drive the dashboard cards (workload, processing time, error rate).
+        </p>
+      </section>
+
+      <section>
+        <h2>3. Mapping JSON fields to pipeline stages</h2>
+        <p>
+          This table explains where each field in the JSON comes from. It mirrors the legend you see in the job result modal.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Stage</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>language</code></td>
+              <td>Language gate</td>
+              <td>Final language code (<code>"en"</code>, <code>"fr"</code>) after gate logic.</td>
+            </tr>
+            <tr>
+              <td><code>probability</code></td>
+              <td>Language gate</td>
+              <td>Confidence in <code>language</code>, between 0 and 1.</td>
+            </tr>
+            <tr>
+              <td><code>text</code></td>
+              <td>Transcription</td>
+              <td>Short human‑friendly transcript snippet.</td>
+            </tr>
+            <tr>
+              <td><code>processing_ms</code></td>
+              <td>Result packaging</td>
+              <td>Total processing time for this job in milliseconds.</td>
+            </tr>
+            <tr>
+              <td><code>original_filename</code></td>
+              <td>Input</td>
+              <td>The file name you uploaded (or derived from the URL).</td>
+            </tr>
+            <tr>
+              <td><code>translated</code></td>
+              <td>Translation</td>
+              <td>Whether an additional translation step was applied.</td>
+            </tr>
+            <tr>
+              <td><code>raw.text</code></td>
+              <td>Transcription</td>
+              <td>Full transcript returned by the model.</td>
+            </tr>
+            <tr>
+              <td><code>raw.info.language</code></td>
+              <td>Model internals</td>
+              <td>Language predicted directly by the model.</td>
+            </tr>
+            <tr>
+              <td><code>raw.info.language_probability</code></td>
+              <td>Model internals</td>
+              <td>Confidence for <code>raw.info.language</code>.</td>
+            </tr>
+            <tr>
+              <td><code>raw.info.duration</code></td>
+              <td>Pre‑processing</td>
+              <td>Original audio duration in seconds.</td>
+            </tr>
+            <tr>
+              <td><code>raw.info.duration_after_vad</code></td>
+              <td>VAD</td>
+              <td>Duration of speech‑only audio after VAD.</td>
+            </tr>
+            <tr>
+              <td><code>raw.info.all_language_probs</code></td>
+              <td>Model internals</td>
+              <td>Optional probability distribution over candidate languages.</td>
+            </tr>
+            <tr>
+              <td><code>raw.info.vad_options</code></td>
+              <td>VAD</td>
+              <td>Configuration options used by the VAD module.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>4. Example: clean English audio</h2>
+        <p>
+          For a short, clean English clip, the pipeline typically follows the happy path:
+        </p>
+        <ol>
+          <li>The model predicts <code>"en"</code> with high probability (e.g. 0.99).</li>
+          <li>The gate accepts with method <span class="badge">autodetect</span>.</li>
+          <li>Transcription runs once and produces the transcript and snippet.</li>
+        </ol>
+        <pre><code>{
+  "language": "en",
+  "probability": 0.99,
+  "text": "So welcome back to the headspace journey, and today 21,",
+  "raw": {
+    "text": "So welcome back to the headspace journey, and today 21,",
+    "info": {
+      "language": "en",
+      "language_probability": 1.0,
+      "duration": 15.0,
+      "duration_after_vad": 15.0,
+      "all_language_probs": null,
+      "vad_options": null
+    }
+  },
+  "translated": false
+}</code></pre>
+      </section>
+
+      <section>
+        <h2>5. Example: noisy French with VAD retry</h2>
+        <p>
+          For long or noisy French clips, the system may need a VAD retry:
+        </p>
+        <ol>
+          <li>First pass: low confidence for <code>"fr"</code>.</li>
+          <li>VAD trims silence; <code>raw.info.duration_after_vad</code> becomes shorter than <code>duration</code>.</li>
+          <li>Second pass: confidence increases above the threshold; the gate accepts with method
+            <span class="badge">autodetect‑vad</span>.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>6. Out‑of‑scope languages</h2>
+        <p>
+          If the model predicts a language outside EN/FR and strict gating is enabled, the service rejects the request early
+          with an HTTP 400 error ("Only English/French audio supported") instead of returning a transcript.
+        </p>
+      </section>
+
+      <section>
+        <h2>7. Where this is implemented</h2>
+        <p class="section-muted">
+          The details live in the backend codebase:
+        </p>
+        <ul>
+          <li><code>app/lang_gate.py</code> – EN/FR gate logic and thresholds.</li>
+          <li><code>app/schemas.py</code> – JSON shapes sent to the dashboard.</li>
+          <li>Worker code – orchestration of pre‑processing, transcription and result packaging.</li>
+        </ul>
+      </section>
+    </main>
+  </body>
+</html>
