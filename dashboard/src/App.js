@@ -155,7 +155,7 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
-      <div className="mx-auto max-w-6xl px-4 py-6">
+      <div className="mx-auto max-w-7xl px-2 sm:px-4 py-4 sm:py-6">
         {/* Top bar */}
         <header className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
@@ -232,8 +232,8 @@ function App() {
           </div>
         </section>
 
-        {/* Jobs table & actions */}
-        <section className="rounded-xl border border-slate-800 bg-slate-900/60 shadow-sm backdrop-blur">
+    {/* Jobs table & actions */}
+    <section className="rounded-xl border border-slate-800 bg-slate-900/60 shadow-sm backdrop-blur">
           <div className="border-b border-slate-800 px-4 py-3 text-sm font-medium text-slate-300">
             <div className="flex items-center justify-between gap-3">
               <span>Jobs</span>
@@ -252,7 +252,7 @@ function App() {
               </button>
             </div>
           </div>
-          <div className="overflow-x-auto">
+          <div className="max-h-[420px] overflow-y-auto">
             <table className="min-w-full text-left text-sm">
               <thead className="bg-slate-900/80 text-xs uppercase tracking-wide text-slate-400">
                 <tr>
@@ -306,7 +306,7 @@ function App() {
                           onChange={(event) => handleCheckboxClick(event, job.job_id)}
                         />
                       </td>
-                      <td className="px-4 py-3 font-mono text-xs text-slate-200">
+                      <td className="px-4 py-3 font-mono text-[11px] text-slate-200 truncate">
                         {job.job_id}
                       </td>
                       <td
@@ -350,7 +350,9 @@ function App() {
                         {job.updated_at}
                       </td>
                       <td className="px-4 py-3 text-xs text-rose-300">
-                        {job.error}
+                        <div className="max-h-12 overflow-y-auto whitespace-normal break-words">
+                          {job.error}
+                        </div>
                       </td>
                     </tr>
                   );

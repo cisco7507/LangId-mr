@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
+import PipelineDocsModal from "./PipelineDocsModal";
 import { API_BASE } from "./config";
 
 export default function JobResultModal({ jobResult, onClose }) {
@@ -7,6 +8,7 @@ export default function JobResultModal({ jobResult, onClose }) {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
+  const [showPipelineDocs, setShowPipelineDocs] = useState(false);
 
   const derived = useMemo(() => {
     if (!result) return null;
@@ -205,7 +207,30 @@ export default function JobResultModal({ jobResult, onClose }) {
                       </span>
                     </button>
                     {showRaw && (
-                      <div className="max-h-64 overflow-auto border-t border-slate-800 px-3 py-2 text-[11px] leading-relaxed text-slate-100">
+                      <div className="max-h-72 overflow-auto border-t border-slate-800 px-3 py-2 text-[11px] leading-relaxed text-slate-100 space-y-2">
+                        <div className="rounded-md bg-slate-900/70 p-2 text-[10px] text-slate-200">
+                          <p className="mb-1 font-semibold text-slate-100">How to read this JSON</p>
+                          <ul className="list-disc space-y-0.5 pl-4">
+                            <li><span className="font-mono">language</span>: ISO language code predicted for the audio (e.g. <span className="font-mono">"en"</span>, <span className="font-mono">"fr"</span>).</li>
+                            <li><span className="font-mono">probability</span>: Confidence for <span className="font-mono">language</span>, from 0 to 1.</li>
+                            <li><span className="font-mono">text</span>: Transcript snippet of what was detected in the audio.</li>
+                            <li><span className="font-mono">raw.text</span>: Full transcript returned by the underlying model.</li>
+                            <li><span className="font-mono">raw.info.language</span>: Language code reported by the model internals.</li>
+                            <li><span className="font-mono">raw.info.language_probability</span>: Confidence for that internal language, from 0 to 1.</li>
+                            <li><span className="font-mono">raw.info.duration</span>: Total audio duration in seconds.</li>
+                            <li><span className="font-mono">raw.info.duration_after_vad</span>: Duration after voice activity detection (speech-only part) in seconds.</li>
+                            <li><span className="font-mono">raw.info.all_language_probs</span>: If present, probability distribution over all candidate languages.</li>
+                            <li><span className="font-mono">raw.info.vad_options</span>: Voice activity detection parameters used for this run (if any).</li>
+                            <li><span className="font-mono">translated</span>: Whether a translation step was applied on top of the original audio.</li>
+                          </ul>
+                          <button
+                            type="button"
+                            className="mt-2 text-[10px] font-medium text-emerald-300 underline hover:text-emerald-200"
+                            onClick={() => setShowPipelineDocs(true)}
+                          >
+                            Open full pipeline documentation
+                          </button>
+                        </div>
                         <pre className="whitespace-pre-wrap break-words font-mono">
                           {JSON.stringify(derived.raw, null, 2)}
                         </pre>
@@ -228,6 +253,7 @@ export default function JobResultModal({ jobResult, onClose }) {
           </div>
         </div>
       </div>
+      <PipelineDocsModal open={showPipelineDocs} onClose={() => setShowPipelineDocs(false)} />
     </div>
   );
 }

@@ -1,10 +1,13 @@
 # langid_service/tests/test_enfr_gate.py
 import pytest
 import numpy as np
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 from langid_service.app.lang_gate import detect_lang_en_fr_only, pick_en_or_fr_by_scoring
 from langid_service.app.translate import translate_en_fr_only
 from langid_service.app.guards import ensure_allowed
+
+TEST_DATA_DIR = Path(__file__).parent / "data" / "golden"
 
 # Create a dummy audio array for testing
 dummy_audio = np.random.rand(16000 * 5)
@@ -74,7 +77,7 @@ def test_api_strict_rejects_non_en_fr(mock_get_model, mock_load_audio, monkeypat
     mock_model.transcribe.return_value = ([], MagicMock(language="es", language_probability=0.42))
     mock_get_model.return_value = mock_model
 
-    with TestClient(app) as client, open("langid_service/tests/data/golden/en_1.wav", "rb") as f:
+    with TestClient(app) as client, open(TEST_DATA_DIR / "en_1.wav", "rb") as f:
         response = client.post("/jobs", files={"file": f})
 
     assert response.status_code == 400

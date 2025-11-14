@@ -1,8 +1,11 @@
 import pytest
 import numpy as np
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 from langid_service.app.worker.runner import process_one_sync
 from langid_service.app.database import SessionLocal
+
+TEST_DATA_DIR = Path(__file__).parent / "data" / "golden"
 
 @patch("langid_service.app.worker.runner.detect_lang_en_fr_only")
 @patch("langid_service.app.worker.runner.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
@@ -19,7 +22,7 @@ def test_submit_and_detect_sync(mock_main_load_audio, mock_runner_load_audio, mo
         "method": "direct",
     }
 
-    with open("langid_service/tests/data/golden/en_1.wav", "rb") as f:
+    with open(TEST_DATA_DIR / "en_1.wav", "rb") as f:
         data = {"file": ("clip_en.wav", f, "audio/wav")}
         # Submit the job
         r = client.post("/jobs", files=data)
@@ -52,7 +55,7 @@ def test_get_result_for_incomplete_job(mock_load_audio, client):
     """
     Tests that the result endpoint returns 409 for incomplete jobs.
     """
-    with open("langid_service/tests/data/golden/en_1.wav", "rb") as f:
+    with open(TEST_DATA_DIR / "en_1.wav", "rb") as f:
         data = {"file": ("clip_en.wav", f, "audio/wav")}
         # Submit the job
         r = client.post("/jobs", files=data)
@@ -72,7 +75,7 @@ def test_get_jobs(client):
 @patch("langid_service.app.main.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
 @patch("langid_service.app.worker.runner.get_model")
 def test_delete_job(mock_get_model, mock_load_audio, client):
-    with open("langid_service/tests/data/golden/en_1.wav", "rb") as f:
+    with open(TEST_DATA_DIR / "en_1.wav", "rb") as f:
         data = {"file": ("clip_en.wav", f, "audio/wav")}
         r = client.post("/jobs", files=data)
     assert r.status_code == 200, r.text

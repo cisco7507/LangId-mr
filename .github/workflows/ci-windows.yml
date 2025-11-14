@@ -47,3 +47,35 @@ jobs:
         working-directory: ./dashboard
         run: |
           npm run build
+
+      - name: Run install script (dry run)
+        shell: pwsh
+        working-directory: ./dashboard
+        run: |
+          Write-Host "==> Simulating Install-LangIdDashboard.ps1 on CI" -ForegroundColor Cyan
+          # Create a fake build folder so the script passes its initial validation.
+          $dashDir = "C:\LangId\dashboard"
+          New-Item -ItemType Directory -Force -Path $dashDir | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $dashDir "build") | Out-Null
+
+          # Create a dummy nssm.exe so the script can "find" it without actually installing a service.
+          $nssmDir = "C:\nssm"
+          New-Item -ItemType Directory -Force -Path $nssmDir | Out-Null
+          $nssmExe = Join-Path $nssmDir "nssm.exe"
+          Set-Content -Path $nssmExe -Value "@echo off`necho nssm stub" -Encoding Ascii
+
+          # The script will call NSSM; override NssmPath so we hit the stub, and
+          # point DashboardDir to our fake build directory. Use a high, unused port.
+          pwsh -File .\launch-script\Install-LangIdDashboard.ps1 -DashboardDir $dashDir -Port 3999 -NssmPath $nssmExe
+
+      - name: Run uninstall script (dry run)
+        shell: pwsh
+        working-directory: ./dashboard
+        run: |
+          Write-Host "==> Simulating Uninstall-LangIdDashboard.ps1 on CI" -ForegroundColor Cyan
+          $nssmDir = "C:\nssm"
+          $nssmExe = Join-Path $nssmDir "nssm.exe"
+          if (-not (Test-Path $nssmExe)) {
+            Set-Content -Path $nssmExe -Value "@echo off`necho nssm stub" -Encoding Ascii
+          }
+          pwsh -File .\launch-script\Uninstall-LangIdDashboard.ps1 -NssmPath $nssmExe
