@@ -87,6 +87,91 @@ def prometheus_metrics():
     data = generate_latest(REGISTRY)
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
+
+@app.get("/metrics/json")
+def metrics_json():
+    """Return key service metrics in a JSON-friendly shape for the dashboard.
+
+    This endpoint intentionally exposes a small, stable subset of metrics so
+    the React dashboard can display stats without needing to parse the
+    Prometheus text format.
+    """
+    session = SessionLocal()
+    try:
+        total = session.query(Job).count()
+
+        by_status = {
+            status.value: session.query(Job).filter(Job.status == status).count()
+            for status in JobStatus
+        }
+
+        running = by_status.get(JobStatus.running.value, 0)
+        queued = by_status.get(JobStatus.queued.value, 0)
+
+        # Jobs completed in the last 5 minutes
+        now = datetime.now(UTC)
+        five_minutes_ago = now - timedelta(minutes=5)
+        recent_completed_5m = (
+            session.query(Job)
+            .filter(
+                Job.status == JobStatus.succeeded,
+                Job.updated_at >= five_minutes_ago,
+            )
+            .count()
+        )
+
+        # Average processing time over the last 50 succeeded jobs.
+        # Prefer the explicit processing_ms field in result_json when available,
+        # and fall back to created_at/updated_at timing otherwise.
+        last_50_succeeded = (
+            session.query(Job)
+            .filter(Job.status == JobStatus.succeeded)
+            .order_by(Job.updated_at.desc())
+            .limit(50)
+            .all()
+        )
+
+        durations = []
+        for job in last_50_succeeded:
+            # Try to read processing_ms from result_json
+            processing_seconds_from_json = None
+            if job.result_json:
+                try:
+                    payload = json.loads(job.result_json)
+                    processing_ms = payload.get("processing_ms")
+                    if isinstance(processing_ms, (int, float)) and processing_ms >= 0:
+                        processing_seconds_from_json = processing_ms / 1000.0
+                except Exception:
+                    # If result_json is malformed, ignore and fall back to timestamps
+                    processing_seconds_from_json = None
+
+            if processing_seconds_from_json is not None:
+                durations.append(processing_seconds_from_json)
+            elif job.updated_at and job.created_at:
+                durations.append((job.updated_at - job.created_at).total_seconds())
+
+        avg_processing = sum(durations) / len(durations) if durations else 0.0
+
+        metrics = {
+            "jobs": {
+                "total": total,
+                "by_status": by_status,
+                "running": running,
+                "queued": queued,
+                "recent_completed_5m": recent_completed_5m,
+            },
+            "workers": {
+                "configured": MAX_WORKERS,
+            },
+            "timing": {
+                "avg_processing_seconds_last_50": avg_processing,
+            },
+        }
+
+        return JSONResponse(content=metrics)
+    finally:
+        session.close()
+
 @app.get("/jobs", response_model=JobListResponse)
 def get_jobs():
     session = SessionLocal()
@@ -99,6 +184,10 @@ def get_jobs():
             created_at=job.created_at,
             updated_at=job.updated_at,
             attempts=job.attempts,
+            filename=Path(job.input_path).name if job.input_path else None,
+            original_filename=job.original_filename,
+            language=(json.loads(job.result_json).get("language") if job.result_json else None),
+            probability=(json.loads(job.result_json).get("probability") if job.result_json else None),
             error=job.error,
         ) for job in jobs])
     finally:
@@ -147,7 +236,13 @@ async def submit_job(file: UploadFile = File(...), target_lang: Optional[str] = 
     # Persist job
     session = SessionLocal()
     try:
-        job = Job(id=job_id, status=JobStatus.queued, input_path=str(stored), target_lang=target_lang)
+        job = Job(
+            id=job_id,
+            status=JobStatus.queued,
+            input_path=str(stored),
+            original_filename=file.filename,
+            target_lang=target_lang,
+        )
         session.add(job)
         session.commit()
     finally:
@@ -196,7 +291,15 @@ async def submit_job_by_url(payload: SubmitByUrl, target_lang: Optional[str] = N
 
     session = SessionLocal()
     try:
-        job = Job(id=job_id, status=JobStatus.queued, input_path=str(stored), target_lang=target_lang)
+        # Use the last path segment of the URL as a best-effort original filename
+        original_filename = Path(url).name or None
+        job = Job(
+            id=job_id,
+            status=JobStatus.queued,
+            input_path=str(stored),
+            original_filename=original_filename,
+            target_lang=target_lang,
+        )
         session.add(job)
         session.commit()
     finally:
@@ -218,6 +321,10 @@ def get_status(job_id: str):
             created_at=job.created_at,
             updated_at=job.updated_at,
             attempts=job.attempts,
+            filename=Path(job.input_path).name if job.input_path else None,
+            original_filename=job.original_filename,
+            language=(json.loads(job.result_json).get("language") if job.result_json else None),
+            probability=(json.loads(job.result_json).get("probability") if job.result_json else None),
             error=job.error,
         )
     finally:
@@ -243,6 +350,7 @@ def get_result(job_id: str):
             probability=raw.get("probability", 0.0), # Note: worker doesn't set this field
             transcript_snippet=transcript_snippet,
             processing_ms=raw.get("processing_ms", 0),
+            original_filename=job.original_filename,
             raw=raw,
         )
     finally:
