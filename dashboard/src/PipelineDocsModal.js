@@ -21,20 +21,20 @@ export default function PipelineDocsModal({ open, onClose }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur"
       role="dialog"
       aria-modal="true"
     >
       <div
         ref={dialogRef}
-        className="mx-2 max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-xl border border-slate-700 bg-slate-900/95 shadow-2xl"
+        className="mx-2 max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
       >
-  <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+  <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           <div>
-            <h2 className="text-sm font-semibold text-slate-50">
+            <h2 className="text-sm font-semibold text-slate-900">
               LangID audio processing pipeline
             </h2>
-            <p className="text-[11px] text-slate-400">
+            <p className="text-[11px] text-slate-600">
               How your audio becomes structured JSON in the dashboard.
             </p>
           </div>
@@ -42,23 +42,23 @@ export default function PipelineDocsModal({ open, onClose }) {
             id="pipeline-close-btn"
             type="button"
             onClick={onClose}
-            className="rounded-md border border-slate-600 bg-slate-800 px-2 py-1 text-[11px] font-medium text-slate-100 hover:bg-slate-700"
+            className="rounded-md border border-slate-300 bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
           >
             Close
           </button>
         </div>
 
-        <div className="scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900 overflow-y-auto px-4 py-3 text-[13px] leading-relaxed text-slate-100 max-h-[70vh]">
+        <div className="scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100 overflow-y-auto px-4 py-3 text-[13px] leading-relaxed text-slate-700 max-h-[70vh]">
           {/* 1. High-level overview */}
           <section className="space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">
               1. High-level overview
             </h3>
             <p>
               At a high level, each job goes through these stages before you see it in the
               dashboard:
             </p>
-            <ol className="list-decimal space-y-1 pl-5 text-slate-200">
+            <ol className="list-decimal space-y-1 pl-5 text-slate-700">
               <li>
                 <strong>Input</strong> – Client uploads an audio file or provides a URL.
               </li>
@@ -80,7 +80,7 @@ export default function PipelineDocsModal({ open, onClose }) {
                 with the job, and update metrics.
               </li>
             </ol>
-            <p className="text-[11px] text-slate-400">
+            <p className="text-[11px] text-slate-600">
               The JSON shown under <span className="font-mono">Raw model output</span> in the
               result modal is a direct view of the data produced at the end of this pipeline.
             </p>
@@ -88,16 +88,16 @@ export default function PipelineDocsModal({ open, onClose }) {
 
           {/* Video walkthrough (local MP4) */}
           <div className="mt-3">
-            <div className="rounded-md border border-slate-700 bg-slate-950/80 p-3">
-              <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-300">
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+              <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-600">
                 Video walkthrough
               </p>
-              <p className="mb-2 text-[11px] text-slate-400">
+              <p className="mb-2 text-[11px] text-slate-600">
                 A short video illustrating the full pipeline and EN/FR decision tree.
               </p>
               <video
                 controls
-                className="h-auto w-full rounded-md border border-slate-700 bg-black"
+                className="h-auto w-full rounded-md border border-slate-200 bg-black"
               >
                 <source src="/pipeline.mp4" type="video/mp4" />
                 Your browser does not support the video tag.
@@ -107,8 +107,8 @@ export default function PipelineDocsModal({ open, onClose }) {
 
           {/* Top-level pipeline diagram (static export from Mermaid) */}
           <div className="mt-3">
-            <div className="rounded-md border border-slate-700 bg-slate-950/80 p-2 text-center text-[11px] text-slate-400">
-              <p className="mb-2 font-medium uppercase tracking-wide text-slate-300">
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-center text-[11px] text-slate-700">
+              <p className="mb-2 font-medium uppercase tracking-wide text-slate-600">
                 Top-level pipeline
               </p>
               <p className="mb-2">
@@ -119,18 +119,18 @@ export default function PipelineDocsModal({ open, onClose }) {
               <img
                 src="/pipeline-overview.svg"
                 alt="Top-level pipeline diagram: audio input to pre-processing to language gate to transcription to optional translation to result JSON and metrics."
-                className="mx-auto max-h-72 w-full max-w-[720px] rounded border border-slate-700 bg-slate-950 object-contain"
+                className="mx-auto max-h-72 w-full max-w-[720px] rounded border border-slate-200 bg-white object-contain"
               />
             </div>
           </div>
 
           {/* 2. Stages in more detail */}
           <section className="mt-4 space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">
               2. Stages in more detail
             </h3>
 
-            <p className="text-[12px] font-semibold text-slate-200">2.1 Input</p>
+            <p className="text-[12px] font-semibold text-slate-700">2.1 Input</p>
             <p>
               The client sends an audio file or a public URL. We validate the input (size,
               extension, basic checks) and persist a <span className="font-mono">Job</span> row
@@ -140,14 +140,14 @@ export default function PipelineDocsModal({ open, onClose }) {
               <span className="font-mono">original_filename</span>, timestamps, and metadata.
             </p>
 
-            <p className="text-[12px] font-semibold text-slate-200">2.2 Pre-processing</p>
+            <p className="text-[12px] font-semibold text-slate-700">2.2 Pre-processing</p>
             <p>
               Audio is loaded and converted to a uniform format: mono, 16 kHz sample rate, float32
               samples. We compute duration in seconds, later exposed as
               <span className="font-mono"> raw.info.duration</span>.
             </p>
 
-            <p className="text-[12px] font-semibold text-slate-200">2.3 Language gate (EN/FR only)</p>
+            <p className="text-[12px] font-semibold text-slate-700">2.3 Language gate (EN/FR only)</p>
             <p>
               The language gate ensures we only accept English/French content and handles noisy or
               ambiguous cases. It combines direct autodetect, optional strict EN/FR rejection, a
@@ -159,8 +159,8 @@ export default function PipelineDocsModal({ open, onClose }) {
 
             {/* Language gate decision tree diagram (static export from Mermaid) */}
             <div className="mt-3">
-              <div className="rounded-md border border-slate-700 bg-slate-950/80 p-2 text-center text-[11px] text-slate-400">
-                <p className="mb-2 font-medium uppercase tracking-wide text-slate-300">
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-center text-[11px] text-slate-700">
+                <p className="mb-2 font-medium uppercase tracking-wide text-slate-600">
                   Language gate decision tree
                 </p>
                 <p className="mb-2">
@@ -171,12 +171,12 @@ export default function PipelineDocsModal({ open, onClose }) {
                 <img
                   src="/language-gate-decision-tree.svg"
                   alt="Decision tree diagram for the EN/FR language gate, including strict rejection, VAD retry, and fallback paths."
-                  className="mx-auto max-h-80 w-full max-w-[720px] rounded border border-slate-700 bg-slate-950 object-contain"
+                  className="mx-auto max-h-80 w-full max-w-[720px] rounded border border-slate-200 bg-white object-contain"
                 />
               </div>
             </div>
 
-            <p className="text-[12px] font-semibold text-slate-200">2.4 Transcription</p>
+            <p className="text-[12px] font-semibold text-slate-700">2.4 Transcription</p>
             <p>
               Once the language is chosen, we run a transcription pass. The model returns the full
               transcript as <span className="font-mono">raw.text</span>. A shorter
@@ -184,7 +184,7 @@ export default function PipelineDocsModal({ open, onClose }) {
               <span className="font-mono">transcript_snippet</span>) and shown in the dashboard.
             </p>
 
-            <p className="text-[12px] font-semibold text-slate-200">2.5 Optional translation</p>
+            <p className="text-[12px] font-semibold text-slate-700">2.5 Optional translation</p>
             <p>
               In deployments where translation is enabled, if the target language differs from the
               detected language we call a translation function. The
@@ -192,7 +192,7 @@ export default function PipelineDocsModal({ open, onClose }) {
               translation step ran.
             </p>
 
-            <p className="text-[12px] font-semibold text-slate-200">2.6 Result packaging &amp; metrics</p>
+            <p className="text-[12px] font-semibold text-slate-700">2.6 Result packaging &amp; metrics</p>
             <p>
               After language detection, transcription and optional translation, we build the final
               JSON, store it in the job record, and serve it from
@@ -203,123 +203,123 @@ export default function PipelineDocsModal({ open, onClose }) {
 
           {/* 3. Mapping JSON fields to pipeline stages */}
           <section className="mt-4 space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">
               3. Mapping JSON fields to pipeline stages
             </h3>
-            <p className="text-[11px] text-slate-400">
+            <p className="text-[11px] text-slate-700">
               This mirrors the legend in the modal and explains where each field comes from.
             </p>
             <div className="overflow-x-auto">
               <table className="min-w-full border-collapse text-[11px]">
                 <thead>
-                  <tr className="bg-slate-900">
-                    <th className="border border-slate-800 px-2 py-1 text-left font-medium text-slate-300">
+                  <tr className="bg-slate-50">
+                    <th className="border border-slate-200 px-2 py-1 text-left font-medium text-slate-600">
                       Field
                     </th>
-                    <th className="border border-slate-800 px-2 py-1 text-left font-medium text-slate-300">
+                    <th className="border border-slate-200 px-2 py-1 text-left font-medium text-slate-600">
                       Stage
                     </th>
-                    <th className="border border-slate-800 px-2 py-1 text-left font-medium text-slate-300">
+                    <th className="border border-slate-200 px-2 py-1 text-left font-medium text-slate-600">
                       Meaning
                     </th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr>
-                    <td className="border border-slate-800 px-2 py-1 font-mono">language</td>
-                    <td className="border border-slate-800 px-2 py-1">Language gate</td>
-                    <td className="border border-slate-800 px-2 py-1">
+                    <td className="border border-slate-200 px-2 py-1 font-mono">language</td>
+                    <td className="border border-slate-200 px-2 py-1">Language gate</td>
+                    <td className="border border-slate-200 px-2 py-1">
                       Final language code (<span className="font-mono">"en"</span>,
                       <span className="font-mono"> "fr"</span>).
                     </td>
                   </tr>
                   <tr>
-                    <td className="border border-slate-800 px-2 py-1 font-mono">probability</td>
-                    <td className="border border-slate-800 px-2 py-1">Language gate</td>
-                    <td className="border border-slate-800 px-2 py-1">
+                    <td className="border border-slate-200 px-2 py-1 font-mono">probability</td>
+                    <td className="border border-slate-200 px-2 py-1">Language gate</td>
+                    <td className="border border-slate-200 px-2 py-1">
                       Confidence in <span className="font-mono">language</span>, between 0 and 1.
                     </td>
                   </tr>
                   <tr>
-                    <td className="border border-slate-800 px-2 py-1 font-mono">text</td>
-                    <td className="border border-slate-800 px-2 py-1">Transcription</td>
-                    <td className="border border-slate-800 px-2 py-1">
+                    <td className="border border-slate-200 px-2 py-1 font-mono">text</td>
+                    <td className="border border-slate-200 px-2 py-1">Transcription</td>
+                    <td className="border border-slate-200 px-2 py-1">
                       Short human-friendly transcript snippet.
                     </td>
                   </tr>
                   <tr>
-                    <td className="border border-slate-800 px-2 py-1 font-mono">processing_ms</td>
-                    <td className="border border-slate-800 px-2 py-1">Result packaging</td>
-                    <td className="border border-slate-800 px-2 py-1">
+                    <td className="border border-slate-200 px-2 py-1 font-mono">processing_ms</td>
+                    <td className="border border-slate-200 px-2 py-1">Result packaging</td>
+                    <td className="border border-slate-200 px-2 py-1">
                       Total processing time for this job in milliseconds.
                     </td>
                   </tr>
                   <tr>
-                    <td className="border border-slate-800 px-2 py-1 font-mono">original_filename</td>
-                    <td className="border border-slate-800 px-2 py-1">Input</td>
-                    <td className="border border-slate-800 px-2 py-1">
+                    <td className="border border-slate-200 px-2 py-1 font-mono">original_filename</td>
+                    <td className="border border-slate-200 px-2 py-1">Input</td>
+                    <td className="border border-slate-200 px-2 py-1">
                       File name you uploaded (or derived from the URL).
                     </td>
                   </tr>
                   <tr>
-                    <td className="border border-slate-800 px-2 py-1 font-mono">translated</td>
-                    <td className="border border-slate-800 px-2 py-1">Translation</td>
-                    <td className="border border-slate-800 px-2 py-1">
+                    <td className="border border-slate-200 px-2 py-1 font-mono">translated</td>
+                    <td className="border border-slate-200 px-2 py-1">Translation</td>
+                    <td className="border border-slate-200 px-2 py-1">
                       Whether an additional translation step was applied.
                     </td>
                   </tr>
                   <tr>
-                    <td className="border border-slate-800 px-2 py-1 font-mono">raw.text</td>
-                    <td className="border border-slate-800 px-2 py-1">Transcription</td>
-                    <td className="border border-slate-800 px-2 py-1">
+                    <td className="border border-slate-200 px-2 py-1 font-mono">raw.text</td>
+                    <td className="border border-slate-200 px-2 py-1">Transcription</td>
+                    <td className="border border-slate-200 px-2 py-1">
                       Full transcript returned by the model.
                     </td>
                   </tr>
                   <tr>
-                    <td className="border border-slate-800 px-2 py-1 font-mono">raw.info.language</td>
-                    <td className="border border-slate-800 px-2 py-1">Model internals</td>
-                    <td className="border border-slate-800 px-2 py-1">
+                    <td className="border border-slate-200 px-2 py-1 font-mono">raw.info.language</td>
+                    <td className="border border-slate-200 px-2 py-1">Model internals</td>
+                    <td className="border border-slate-200 px-2 py-1">
                       Language predicted directly by the model.
                     </td>
                   </tr>
                   <tr>
-                    <td className="border border-slate-800 px-2 py-1 font-mono">
+                    <td className="border border-slate-200 px-2 py-1 font-mono">
                       raw.info.language_probability
                     </td>
-                    <td className="border border-slate-800 px-2 py-1">Model internals</td>
-                    <td className="border border-slate-800 px-2 py-1">
+                    <td className="border border-slate-200 px-2 py-1">Model internals</td>
+                    <td className="border border-slate-200 px-2 py-1">
                       Confidence for <span className="font-mono">raw.info.language</span>.
                     </td>
                   </tr>
                   <tr>
-                    <td className="border border-slate-800 px-2 py-1 font-mono">raw.info.duration</td>
-                    <td className="border border-slate-800 px-2 py-1">Pre-processing</td>
-                    <td className="border border-slate-800 px-2 py-1">
+                    <td className="border border-slate-200 px-2 py-1 font-mono">raw.info.duration</td>
+                    <td className="border border-slate-200 px-2 py-1">Pre-processing</td>
+                    <td className="border border-slate-200 px-2 py-1">
                       Original audio duration in seconds.
                     </td>
                   </tr>
                   <tr>
-                    <td className="border border-slate-800 px-2 py-1 font-mono">
+                    <td className="border border-slate-200 px-2 py-1 font-mono">
                       raw.info.duration_after_vad
                     </td>
-                    <td className="border border-slate-800 px-2 py-1">VAD</td>
-                    <td className="border border-slate-800 px-2 py-1">
+                    <td className="border border-slate-200 px-2 py-1">VAD</td>
+                    <td className="border border-slate-200 px-2 py-1">
                       Duration of speech-only audio after voice activity detection.
                     </td>
                   </tr>
                   <tr>
-                    <td className="border border-slate-800 px-2 py-1 font-mono">
+                    <td className="border border-slate-200 px-2 py-1 font-mono">
                       raw.info.all_language_probs
                     </td>
-                    <td className="border border-slate-800 px-2 py-1">Model internals</td>
-                    <td className="border border-slate-800 px-2 py-1">
+                    <td className="border border-slate-200 px-2 py-1">Model internals</td>
+                    <td className="border border-slate-200 px-2 py-1">
                       Optional probability distribution over candidate languages.
                     </td>
                   </tr>
                   <tr>
-                    <td className="border border-slate-800 px-2 py-1 font-mono">raw.info.vad_options</td>
-                    <td className="border border-slate-800 px-2 py-1">VAD</td>
-                    <td className="border border-slate-800 px-2 py-1">
+                    <td className="border border-slate-200 px-2 py-1 font-mono">raw.info.vad_options</td>
+                    <td className="border border-slate-200 px-2 py-1">VAD</td>
+                    <td className="border border-slate-200 px-2 py-1">
                       Configuration options used by the VAD module.
                     </td>
                   </tr>
@@ -329,7 +329,7 @@ export default function PipelineDocsModal({ open, onClose }) {
           </section>
 
           <section className="mt-4 space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">
               4. Example: clean English audio (happy path)
             </h3>
             <p>
@@ -357,7 +357,7 @@ export default function PipelineDocsModal({ open, onClose }) {
 }`}</code></pre>
           </section>
 
-          <section className="mt-4 space-y-1 text-[11px] text-slate-400">
+          <section className="mt-4 space-y-1 text-[11px] text-slate-700">
             <p>
               Backend implementation details live in the FastAPI service (e.g.
               <span className="font-mono"> app/lang_gate.py</span>,
