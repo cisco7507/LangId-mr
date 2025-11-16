@@ -86,19 +86,19 @@ export default function JobResultModal({ jobResult, onClose }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur"
       role="dialog"
       aria-modal="true"
     >
       <div
         ref={modalRef}
-        className="relative mx-auto w-11/12 max-w-2xl rounded-xl border border-slate-700 bg-slate-900/95 p-5 shadow-2xl"
+        className="relative mx-auto w-11/12 max-w-2xl rounded-xl border border-slate-200 bg-white p-5 shadow-2xl"
       >
         <div className="mt-1 text-left">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h3 className="text-lg font-semibold text-slate-50">{title}</h3>
-              <p className="mt-1 text-xs text-slate-400">
+              <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
+              <p className="mt-1 text-xs text-slate-600">
                 Click anywhere outside or press Escape to close.
               </p>
             </div>
@@ -109,13 +109,13 @@ export default function JobResultModal({ jobResult, onClose }) {
           <div className="mt-4 space-y-4">
             {/* Loading / error state */}
             {loading && (
-              <div className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200">
+              <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700">
                 Loading result…
               </div>
             )}
 
             {error && !loading && (
-              <div className="rounded-md border border-rose-500/60 bg-rose-950/60 px-3 py-2 text-xs text-rose-100">
+              <div className="rounded-md border border-rose-500/10 bg-rose-50 px-3 py-2 text-xs text-rose-800">
                 {error}
               </div>
             )}
@@ -124,39 +124,39 @@ export default function JobResultModal({ jobResult, onClose }) {
               <>
                 {/* Summary row */}
                 <div className="grid gap-3 md:grid-cols-4">
-                  <div className="rounded-lg border border-slate-800 bg-slate-900/80 p-3">
-                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">
                       Job ID
                     </p>
-                    <p className="mt-1 truncate font-mono text-xs text-slate-100">
+                    <p className="mt-1 truncate font-mono text-xs text-slate-900">
                       {result.job_id}
                     </p>
                   </div>
 
-                  <div className="rounded-lg border border-slate-800 bg-slate-900/80 p-3">
-                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">
                       File
                     </p>
                     <p
-                      className="mt-1 truncate text-xs text-slate-100"
+                      className="mt-1 truncate text-xs text-slate-900"
                       title={derived.originalFilename || result.job_id}
                     >
                       {derived.originalFilename || "—"}
                     </p>
                   </div>
 
-                  <div className="rounded-lg border border-slate-800 bg-slate-900/80 p-3">
-                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">
                       Probability
                     </p>
-                    <div className="mt-1 flex items-center justify-between text-xs text-slate-100">
+                    <div className="mt-1 flex items-center justify-between text-xs text-slate-900">
                       <span>
                         {derived.probability != null
                           ? `${(derived.probability * 100).toFixed(1)}%`
                           : "—"}
                       </span>
                     </div>
-                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
                       <div
                         className="h-1.5 rounded-full bg-gradient-to-r from-emerald-400 to-sky-400"
                         style={{
@@ -169,11 +169,11 @@ export default function JobResultModal({ jobResult, onClose }) {
                     </div>
                   </div>
 
-                  <div className="rounded-lg border border-slate-800 bg-slate-900/80 p-3">
-                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">
                       Processing time
                     </p>
-                    <p className="mt-1 text-xs text-slate-100">
+                    <p className="mt-1 text-xs text-slate-900">
                       {derived.processingMs != null
                         ? `${(derived.processingMs / 1000).toFixed(2)} s`
                         : "—"}
@@ -183,11 +183,11 @@ export default function JobResultModal({ jobResult, onClose }) {
 
                 {/* Transcript snippet */}
                 {derived.transcript && (
-                  <div className="rounded-lg border border-slate-800 bg-slate-900/90 p-3">
-                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                  <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">
                       Transcript snippet
                     </p>
-                    <p className="mt-1 text-sm text-slate-100">
+                    <p className="mt-1 text-sm text-slate-700">
                       {derived.transcript}
                     </p>
                   </div>
@@ -195,21 +195,21 @@ export default function JobResultModal({ jobResult, onClose }) {
 
                 {/* Raw JSON toggle */}
                 {derived.raw && (
-                  <div className="rounded-lg border border-slate-800 bg-slate-950/70">
+                  <div className="rounded-lg border border-slate-200 bg-slate-50">
                     <button
                       type="button"
-                      className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-900/70"
+                      className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
                       onClick={() => setShowRaw((prev) => !prev)}
                     >
                       <span>Raw model output</span>
-                      <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                      <span className="text-[10px] uppercase tracking-wide text-slate-600">
                         {showRaw ? "Hide" : "Show"}
                       </span>
                     </button>
                     {showRaw && (
-                      <div className="max-h-72 overflow-auto border-t border-slate-800 px-3 py-2 text-[11px] leading-relaxed text-slate-100 space-y-2">
-                        <div className="rounded-md bg-slate-900/70 p-2 text-[10px] text-slate-200">
-                          <p className="mb-1 font-semibold text-slate-100">How to read this JSON</p>
+                      <div className="max-h-72 overflow-auto border-t border-slate-200 px-3 py-2 text-[11px] leading-relaxed text-slate-700 space-y-2">
+                        <div className="rounded-md bg-slate-50 p-2 text-[10px] text-slate-700">
+                          <p className="mb-1 font-semibold text-slate-900">How to read this JSON</p>
                           <ul className="list-disc space-y-0.5 pl-4">
                             <li><span className="font-mono">language</span>: ISO language code predicted for the audio (e.g. <span className="font-mono">"en"</span>, <span className="font-mono">"fr"</span>).</li>
                             <li><span className="font-mono">probability</span>: Confidence for <span className="font-mono">language</span>, from 0 to 1.</li>
@@ -225,7 +225,7 @@ export default function JobResultModal({ jobResult, onClose }) {
                           </ul>
                           <button
                             type="button"
-                            className="mt-2 text-[10px] font-medium text-emerald-300 underline hover:text-emerald-200"
+                            className="mt-2 text-[10px] font-medium text-emerald-600 underline hover:text-emerald-500"
                             onClick={() => setShowPipelineDocs(true)}
                           >
                             Open full pipeline documentation
@@ -260,14 +260,14 @@ export default function JobResultModal({ jobResult, onClose }) {
 
 function LanguageBadge({ language }) {
   let label = "Unknown";
-  let classes = "bg-slate-700 text-slate-50";
+  let classes = "bg-slate-100 text-slate-800";
 
   if (language === "en") {
     label = "English";
-    classes = "bg-emerald-500/20 text-emerald-200 border border-emerald-500/40";
+    classes = "bg-emerald-100 text-emerald-800 border border-emerald-200";
   } else if (language === "fr") {
     label = "French";
-    classes = "bg-sky-500/20 text-sky-200 border border-sky-500/40";
+    classes = "bg-sky-100 text-sky-800 border border-sky-200";
   }
 
   return (

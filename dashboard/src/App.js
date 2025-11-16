@@ -146,27 +146,27 @@ function App() {
   }, [metrics]);
 
   const probabilityColor = (p) => {
-    if (typeof p !== "number") return "bg-slate-700 text-slate-50";
-    if (p >= 0.9) return "bg-emerald-500/20 text-emerald-200 border border-emerald-500/40";
-    if (p >= 0.7) return "bg-sky-500/20 text-sky-200 border border-sky-500/40";
-    if (p >= 0.4) return "bg-amber-500/20 text-amber-200 border border-amber-500/40";
-    return "bg-rose-500/20 text-rose-200 border border-rose-500/40";
+    if (typeof p !== "number") return "bg-slate-100 text-slate-700";
+    if (p >= 0.9) return "bg-emerald-100 text-emerald-800 border border-emerald-200";
+    if (p >= 0.7) return "bg-sky-100 text-sky-800 border border-sky-200";
+    if (p >= 0.4) return "bg-amber-100 text-amber-800 border border-amber-200";
+    return "bg-rose-100 text-rose-800 border border-rose-200";
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
+    <div className="min-h-screen bg-white text-slate-900">
       <div className="mx-auto max-w-7xl px-2 sm:px-4 py-4 sm:py-6">
         {/* Top bar */}
         <header className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-50">
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
               LangID Job Dashboard
             </h1>
-            <p className="mt-1 text-sm text-slate-400">
+            <p className="mt-1 text-sm text-slate-600">
               Monitor EN/FR language detection jobs and inspect detailed results.
             </p>
           </div>
-          <div className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-xs text-slate-300">
+          <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-xs text-slate-700">
             <span className="inline-flex h-2 w-2 rounded-full bg-emerald-400" />
             <span>API online</span>
           </div>
@@ -233,8 +233,8 @@ function App() {
         </section>
 
     {/* Jobs table & actions */}
-    <section className="rounded-xl border border-slate-800 bg-slate-900/60 shadow-sm backdrop-blur">
-          <div className="border-b border-slate-800 px-4 py-3 text-sm font-medium text-slate-300">
+    <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-200 px-4 py-3 text-sm font-medium text-slate-700">
             <div className="flex items-center justify-between gap-3">
               <span>Jobs</span>
               <button
@@ -254,12 +254,12 @@ function App() {
           </div>
           <div className="max-h-[420px] overflow-y-auto">
             <table className="min-w-full text-left text-sm">
-              <thead className="bg-slate-900/80 text-xs uppercase tracking-wide text-slate-400">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-600">
                 <tr>
                   <th className="px-4 py-3">
                     <input
                       type="checkbox"
-                      className="h-4 w-4 rounded border-slate-600 bg-slate-900 text-emerald-500 focus:ring-emerald-500"
+                      className="h-4 w-4 rounded border-slate-300 bg-white text-emerald-500 focus:ring-emerald-500"
                       onChange={handleSelectAllClick}
                       checked={selectedJobs.length === jobs.length && jobs.length > 0}
                     />
@@ -275,7 +275,7 @@ function App() {
                   <th className="px-4 py-3">Error</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800">
+              <tbody className="divide-y divide-slate-200">
                 {jobs.length === 0 && (
                   <tr>
                     <td
@@ -293,31 +293,31 @@ function App() {
                       key={job.job_id}
                       onClick={() => isClickable && handleRowClick(job)}
                       className={
-                        "transition hover:bg-slate-800/60 " +
+                        "transition hover:bg-slate-100 " +
                         (isClickable ? "cursor-pointer" : "cursor-default")
                       }
                     >
                       <td className="px-4 py-3">
                         <input
                           type="checkbox"
-                          className="h-4 w-4 rounded border-slate-600 bg-slate-900 text-emerald-500 focus:ring-emerald-500"
+                          className="h-4 w-4 rounded border-slate-300 bg-white text-emerald-500 focus:ring-emerald-500"
                           checked={selectedJobs.includes(job.job_id)}
                           onClick={(event) => event.stopPropagation()}
                           onChange={(event) => handleCheckboxClick(event, job.job_id)}
                         />
                       </td>
-                      <td className="px-4 py-3 font-mono text-[11px] text-slate-200 truncate">
+                      <td className="px-4 py-3 font-mono text-[11px] text-slate-900 truncate">
                         {job.job_id}
                       </td>
                       <td
-                        className="px-4 py-3 text-xs text-slate-300 max-w-xs truncate"
+                        className="px-4 py-3 text-xs text-slate-700 max-w-xs truncate"
                         title={job.original_filename || job.filename || job.job_id}
                       >
                         {job.original_filename || job.filename || ""}
                       </td>
                       <td className="px-4 py-3 text-xs">
                         {job.language ? (
-                          <span className="inline-flex items-center rounded-full bg-slate-800 px-2 py-0.5 text-[11px] font-medium text-slate-100">
+                          <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-800">
                             {job.language.toUpperCase()}
                           </span>
                         ) : (
@@ -343,10 +343,10 @@ function App() {
                       <td className="px-4 py-3">
                         <ProgressBar value={job.progress} />
                       </td>
-                      <td className="px-4 py-3 text-xs text-slate-400">
+                      <td className="px-4 py-3 text-xs text-slate-600">
                         {job.created_at}
                       </td>
-                      <td className="px-4 py-3 text-xs text-slate-400">
+                      <td className="px-4 py-3 text-xs text-slate-600">
                         {job.updated_at}
                       </td>
                       <td className="px-4 py-3 text-xs text-rose-300">
@@ -372,20 +372,20 @@ function App() {
 
 function StatCard({ label, value, accent }) {
   const accentClasses = {
-    success: "border-emerald-500/40 bg-emerald-950/40",
-    danger: "border-rose-500/40 bg-rose-950/40",
-    info: "border-sky-500/40 bg-sky-950/40",
+    success: "border-emerald-200 bg-emerald-50",
+    danger: "border-rose-200 bg-rose-50",
+    info: "border-sky-200 bg-sky-50",
   };
   return (
     <div
-      className={`rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 shadow-sm ${
+      className={`rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm ${
         accent ? accentClasses[accent] ?? "" : ""
       }`}
     >
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-600">
         {label}
       </p>
-      <p className="mt-1 text-xl font-semibold text-slate-50">{value}</p>
+      <p className="mt-1 text-xl font-semibold text-slate-900">{value}</p>
     </div>
   );
 }
