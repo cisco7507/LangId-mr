@@ -217,6 +217,10 @@ curl http://localhost:8080/jobs/<id>
 curl http://localhost:8080/jobs/<id>/result
 ```
 
+Response payload includes `detection_method` so you can distinguish
+between straight autodetect (`autodetect`), VAD-assisted autodetect
+(`autodetect-vad`), and the EN/FR scoring fallback path (`fallback`).
+
 ---
 
 # **🗄 Environment Variables (.env.example)**

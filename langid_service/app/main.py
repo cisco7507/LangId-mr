@@ -367,6 +367,7 @@ def get_result(job_id: str):
             job_id=job.id,
             language=raw.get("language", "unknown"),
             probability=raw.get("probability", 0.0), # Note: worker doesn't set this field
+            detection_method=raw.get("detection_method"),
             transcript_snippet=transcript_snippet,
             processing_ms=raw.get("processing_ms", 0),
             original_filename=job.original_filename,

@@ -23,6 +23,7 @@ class ResultResponse(BaseModel):
     job_id: str
     language: str
     probability: float
+    detection_method: Optional[str] = None
     transcript_snippet: Optional[str] = None
     processing_ms: int
     original_filename: Optional[str] = None

@@ -2,6 +2,21 @@ import React, { useEffect, useRef, useState, useMemo } from "react";
 import PipelineDocsModal from "./PipelineDocsModal";
 import { API_BASE } from "./config";
 
+const METHOD_DISPLAY = {
+  autodetect: {
+    label: "Autodetect",
+    hint: "Accepted on the first pass",
+  },
+  "autodetect-vad": {
+    label: "Autodetect + VAD",
+    hint: "Accepted after VAD retry",
+  },
+  fallback: {
+    label: "EN/FR fallback",
+    hint: "Forced decision between EN and FR",
+  },
+};
+
 export default function JobResultModal({ jobResult, onClose }) {
   const modalRef = useRef(null);
   const [result, setResult] = useState(null);
@@ -18,7 +33,13 @@ export default function JobResultModal({ jobResult, onClose }) {
     const transcript = result.transcript_snippet;
     const raw = result.raw ?? null;
     const originalFilename = result.original_filename ?? null;
-    return { language, probability, processingMs, transcript, raw, originalFilename };
+    const detectionMethod =
+      result.detection_method ??
+      raw?.detection_method ??
+      raw?.lang_gate?.method ??
+      null;
+    const langGate = raw?.lang_gate ?? null;
+    return { language, probability, processingMs, transcript, raw, originalFilename, detectionMethod, langGate };
   }, [result]);
 
   // Fetch result when a (new) job arrives
@@ -123,7 +144,7 @@ export default function JobResultModal({ jobResult, onClose }) {
             {derived && !loading && !error && (
               <>
                 {/* Summary row */}
-                <div className="grid gap-3 md:grid-cols-4">
+                <div className="grid gap-3 md:grid-cols-5">
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                     <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">
                       Job ID
@@ -179,6 +200,11 @@ export default function JobResultModal({ jobResult, onClose }) {
                         : "—"}
                     </p>
                   </div>
+
+                  <DetectionMethodCard
+                    method={derived.detectionMethod}
+                    langGate={derived.langGate}
+                  />
                 </div>
 
                 {/* Transcript snippet */}
@@ -221,6 +247,7 @@ export default function JobResultModal({ jobResult, onClose }) {
                             <li><span className="font-mono">raw.info.duration_after_vad</span>: Duration after voice activity detection (speech-only part) in seconds.</li>
                             <li><span className="font-mono">raw.info.all_language_probs</span>: If present, probability distribution over all candidate languages.</li>
                             <li><span className="font-mono">raw.info.vad_options</span>: Voice activity detection parameters used for this run (if any).</li>
+                            <li><span className="font-mono">raw.lang_gate</span>: Snapshot of the EN/FR gate decision (language, probability, method) before packaging.</li>
                             <li><span className="font-mono">translated</span>: Whether a translation step was applied on top of the original audio.</li>
                           </ul>
                           <button
@@ -275,5 +302,29 @@ function LanguageBadge({ language }) {
       <span className="mr-1 inline-block h-2 w-2 rounded-full bg-current" />
       {label}
     </span>
+  );
+}
+
+function DetectionMethodCard({ method, langGate }) {
+  const display = METHOD_DISPLAY[method] ?? {
+    label: method ?? "Unknown",
+    hint: "Language gate branch",
+  };
+  const confidence =
+    typeof langGate?.probability === "number" ? `${(langGate.probability * 100).toFixed(1)}%` : "—";
+  const gateLanguage = langGate?.language ?? "—";
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">
+        Detection method
+      </p>
+      <p className="mt-1 text-xs font-semibold text-slate-900">{display.label}</p>
+      <p className="text-[10px] text-slate-600">{display.hint}</p>
+      <div className="mt-2 space-y-0.5 text-[11px] text-slate-700">
+        <p>Gate language: {gateLanguage}</p>
+        <p>Gate confidence: {confidence}</p>
+      </div>
+    </div>
   );
 }

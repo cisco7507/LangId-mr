@@ -37,6 +37,39 @@
         }
       }
     },
+    "/metrics/prometheus": {
+      "get": {
+        "summary": "Prometheus Metrics",
+        "operationId": "prometheus_metrics_metrics_prometheus_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics/json": {
+      "get": {
+        "summary": "Metrics Json",
+        "description": "Return key service metrics in a JSON-friendly shape for the dashboard.\n\nThis endpoint intentionally exposes a small, stable subset of metrics so\nthe React dashboard can display stats without needing to parse the\nPrometheus text format.",
+        "operationId": "metrics_json_metrics_json_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/jobs": {
       "get": {
         "summary": "Get Jobs",
@@ -54,18 +87,70 @@
           }
         }
       },
+      "delete": {
+        "summary": "Delete Jobs",
+        "operationId": "delete_jobs_jobs_delete",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteJobsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "summary": "Submit Job",
         "operationId": "submit_job_jobs_post",
+        "parameters": [
+          {
+            "name": "target_lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Target Lang"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "multipart/form-data": {
               "schema": {
                 "$ref": "#/components/schemas/Body_submit_job_jobs_post"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -89,55 +174,39 @@
             }
           }
         }
-      },
-      "delete": {
-        "summary": "Delete Jobs",
-        "operationId": "delete_jobs_jobs_delete",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DeleteJobsRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/jobs/by-url": {
       "post": {
         "summary": "Submit Job By Url",
         "operationId": "submit_job_by_url_jobs_by_url_post",
+        "parameters": [
+          {
+            "name": "target_lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Target Lang"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/SubmitByUrl"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -282,9 +351,6 @@
           },
           "status": {
             "type": "string",
-            "enum": [
-              "queued"
-            ],
             "const": "queued",
             "title": "Status"
           }
@@ -360,6 +426,50 @@
             "type": "integer",
             "title": "Attempts"
           },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          },
+          "original_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Filename"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "probability": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability"
+          },
           "error": {
             "anyOf": [
               {
@@ -390,16 +500,22 @@
           },
           "language": {
             "type": "string",
-            "enum": [
-              "en",
-              "fr",
-              "unknown"
-            ],
             "title": "Language"
           },
           "probability": {
             "type": "number",
             "title": "Probability"
+          },
+          "detection_method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detection Method"
           },
           "transcript_snippet": {
             "anyOf": [
@@ -416,7 +532,19 @@
             "type": "integer",
             "title": "Processing Ms"
           },
+          "original_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Filename"
+          },
           "raw": {
+            "additionalProperties": true,
             "type": "object",
             "title": "Raw"
           }
@@ -435,9 +563,6 @@
         "properties": {
           "url": {
             "type": "string",
-            "maxLength": 2083,
-            "minLength": 1,
-            "format": "uri",
             "title": "Url"
           }
         },

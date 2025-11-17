@@ -34,6 +34,7 @@ def process_one(session: Session, job: Job) -> None:
         # Detect language with EN/FR gate using the in-memory audio
         lang_info = detect_lang_en_fr_only(audio)
         lang = lang_info["language"]
+        detection_method = lang_info.get("method", "autodetect")
 
         # Extract language probability from gate output (fallback to 0.0 if missing)
         raw_prob = lang_info.get("language_probability")
@@ -85,9 +86,11 @@ def process_one(session: Session, job: Job) -> None:
             "language": lang,
             "probability": prob,
             "text": snippet,
+            "detection_method": detection_method,
             "raw": {
                 "text": snippet,
                 "info": raw_info,
+                "lang_gate": lang_info,
             }
         }
 

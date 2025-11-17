@@ -101,7 +101,7 @@ The language gate ensures we only accept English/French content, and it tries to
      - We run cheap EN vs FR "scoring" passes and pick the better of the two.
      - We record the decision as method **`fallback`**.
 
-The *final* language that the service returns in the top-level JSON is the result of this gate, not necessarily the first guess from the model.
+Each branch stamps a `detection_method` that is propagated to the API response (`autodetect`, `autodetect-vad`, or `fallback`), and the full gate payload is mirrored under `raw.lang_gate` for debugging. The *final* language that the service returns in the top-level JSON is the result of this gate, not necessarily the first guess from the model.
 
 ### 2.4 Transcription
 
@@ -185,6 +185,7 @@ This table shows where each field in the result JSON comes from.
 | `job_id`                        | string      | Result packaging          | Unique identifier of the job.                                          |
 | `language`                      | string      | Language gate             | Final chosen language code for the audio (e.g. `"en"`, `"fr"`).       |
 | `probability`                   | float [0–1] | Language gate             | Confidence that `language` is correct.                                  |
+| `detection_method`              | enum        | Language gate             | Which branch accepted the audio: `autodetect`, `autodetect-vad`, `fallback`. |
 | `text` / `transcript_snippet`   | string      | Transcription             | Human-readable snippet of the transcript.                               |
 | `processing_ms`                 | integer     | Result packaging          | End-to-end processing time for this job in milliseconds.                |
 | `original_filename`             | string      | Input                     | Original filename provided by the client or URL basename.               |
@@ -196,6 +197,9 @@ This table shows where each field in the result JSON comes from.
 | `raw.info.duration_after_vad`   | float       | VAD                       | Duration of speech-only audio after VAD, in seconds.                    |
 | `raw.info.all_language_probs`   | object/null | Model internals           | If present, full probability distribution over candidate languages.     |
 | `raw.info.vad_options`          | object/null | VAD                       | Configuration used by the VAD module (thresholds, frame sizes, etc.).   |
+| `raw.lang_gate.language`        | string      | Language gate             | EN/FR decision produced by the gate (after fallback logic).             |
+| `raw.lang_gate.probability`     | float/null  | Language gate             | Gate confidence for the accepted language (may be `null` in fallback).  |
+| `raw.lang_gate.method`          | enum        | Language gate             | Same as top-level `detection_method`, recorded before result packaging. |
 
 ---
 
@@ -270,6 +274,127 @@ This table shows where each field in the result JSON comes from.
 4. The job ends in an error state and does not produce a transcript.
 
 This behaviour explains the errors you may see in the dashboard when the input is not English or French.
+
+### 5.4 Spanish audio that stays in autodetect
+
+**Scenario:**
+
+- Spanish text synthesized by the default macOS `say` voice (which often intersperses English phonemes).
+- Strict mode is disabled, so the gate is allowed to coerce ambiguous inputs into EN/FR.
+- The first autodetect pass returns `language="en"` with probability `0.885`, which is higher than `LANG_DETECT_MIN_PROB` (0.6).
+
+**Result JSON (prettified):**
+
+```json
+{
+  "job_id": "c809ab4a-e2ca-4cc5-85ba-388e5a631bfe",
+  "language": "en",
+  "probability": 0.8854513764381409,
+  "detection_method": "autodetect",
+  "transcript_snippet": "Ola, STS Una Jemplo and Esponial Paraforza L-Fallback Del Detector",
+  "processing_ms": 0,
+  "original_filename": "langid_es_sample.wav",
+  "raw": {
+    "language": "en",
+    "probability": 0.8854513764381409,
+    "text": "Ola, STS Una Jemplo and Esponial Paraforza L-Fallback Del Detector",
+    "detection_method": "autodetect",
+    "raw": {
+      "text": "Ola, STS Una Jemplo and Esponial Paraforza L-Fallback Del Detector",
+      "info": {
+        "language": "en",
+        "language_probability": 1,
+        "duration": 4.9855625,
+        "duration_after_vad": 4.9855625,
+        "all_language_probs": null,
+        "vad_options": null
+      },
+      "lang_gate": {
+        "language": "en",
+        "probability": 0.8854513764381409,
+        "method": "autodetect"
+      }
+    },
+    "translated": false
+  }
+}
+```
+
+**Why there was no fallback:**
+
+1. The Whisper autodetect step listened to the synthesized audio and concluded the spoken content was English. Text-to-speech voices often include English numerals or phrases even when fed Spanish text, which biases the decoder toward EN.
+2. The reported probability (~0.885) is comfortably above the configured `LANG_DETECT_MIN_PROB` threshold (0.6), so the gate treats this as a confident EN result.
+3. Because the gate already has a confident EN/FR answer, it never triggers the VAD retry or the EN/FR scoring fallback. Those branches only run when confidence is low or the detected language is outside `{en, fr}`.
+4. Consequently `detection_method` stays `autodetect`, and `raw.lang_gate.probability` reflects the 0.885 confidence from the first pass.
+
+### 5.5 Japanese audio that triggers the EN/FR fallback
+
+**Scenario:**
+
+- Japanese sentence spoken by the macOS `say -v Kyoko` voice.
+- `ENFR_STRICT_REJECT` is disabled, so non-EN/FR audio is forced through the fallback scorer.
+- Gate returns `method = "fallback"` and `probability = null` because the scorer simply picks between EN and FR.
+
+**Result JSON (prettified):**
+
+```json
+{
+  "job_id": "d71d336b-b468-4a97-9742-5a4ac66c6722",
+  "language": "en",
+  "probability": 0.0,
+  "detection_method": "fallback",
+  "transcript_snippet": "Hello, this is the sample for testing the default back",
+  "processing_ms": 0,
+  "original_filename": "langid_ja_sample.wav",
+  "raw": {
+    "language": "en",
+    "probability": 0.0,
+    "text": "Hello, this is the sample for testing the default back",
+    "detection_method": "fallback",
+    "raw": {
+      "text": "Hello, this is the sample for testing the default back",
+      "info": {
+        "language": "en",
+        "language_probability": 1,
+        "duration": 5.4751875,
+        "duration_after_vad": 5.4751875,
+        "all_language_probs": null,
+        "vad_options": "VadOptions(threshold=0.5, neg_threshold=None, min_speech_duration_ms=0, max_speech_duration_s=inf, min_silence_duration_ms=2000, speech_pad_ms=400)"
+      },
+      "lang_gate": {
+        "language": "en",
+        "probability": null,
+        "method": "fallback"
+      }
+    },
+    "translated": false
+  }
+}
+```
+
+**Line-by-line explanation:**
+
+- `job_id` – UUID stored in the Jobs table. Use it with `/jobs/{id}`.
+- `language` – The gate’s final EN/FR decision (fallback chooses the "least-wrong" language, here English).
+- `probability` – Zero because the scoring fallback does not emit a calibrated probability.
+- `detection_method` – Explicitly shows this result came from the fallback branch.
+- `transcript_snippet` – First ~10 words of the Whisper transcript of the snippet window.
+- `processing_ms` – End-to-end processing time. It is zero in this sample because we have not yet wired runtime timing into the worker.
+- `original_filename` – Mirrors the upload filename (`langid_ja_sample.wav`).
+- `raw.language` – Same EN/FR decision seen by the rest of the app, prior to packaging.
+- `raw.probability` – Same as top-level `probability` for backward compatibility.
+- `raw.text` – Full snippet text (same as `transcript_snippet` here because the sample is short).
+- `raw.detection_method` – Duplicate field for clients that only consume the `raw` blob.
+- `raw.raw.text` – Full snippet again (legacy field retained for compatibility with older dashboards).
+- `raw.raw.info` – Whisper metadata:
+  - `language` / `language_probability` – The speech model believes the transcript text is English after decoding, even though the original speech was Japanese.
+  - `duration` / `duration_after_vad` – Audio was 5.47 s and VAD did not trim any frames.
+- `raw.raw.info.all_language_probs` – `null` because we did not request the full probability distribution.
+- `raw.raw.info.vad_options` – Parameters used when VAD filtering is enabled.
+- `raw.raw.lang_gate.language` – The EN/FR scorer picked English.
+- `raw.raw.lang_gate.probability` – `null` because fallback does not compute a probability, only a relative score.
+- `raw.raw.lang_gate.method` – Confirms fallback was executed inside the gate.
+- `raw.translated` – `false` because no EN↔FR translation was requested.
 
 ---
 
