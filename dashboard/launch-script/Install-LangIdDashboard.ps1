@@ -1,18 +1,51 @@
 [CmdletBinding()]
 param(
   [string]$ServiceName   = "LangIdDashboard",
-  [string]$DashboardDir  = "C:\LangId\dashboard",
+  [string]$DashboardDir  = "",
   [int]   $Port          = 3000,
-  [string]$LogDir        = "D:\LangId-Data\logs",
+  [string]$LogDir        = "C:\LangId-Data\logs",
   [string]$NssmPath      = ""
 )
 
 function Fail($m){ Write-Error $m; exit 1 }
 
 Write-Host "==> Validating inputs..." -ForegroundColor Cyan
+## Determine script root robustly (works when script is executed in different ways)
+$scriptPath = $MyInvocation.MyCommand.Path
+if (-not $scriptPath) { $scriptPath = $PSCommandPath }
+if (-not $scriptPath) { $scriptPath = $PSScriptRoot }
+if ($scriptPath) { $scriptRoot = Split-Path -Parent $scriptPath } else { $scriptRoot = (Get-Location).ProviderPath }
+
+if (-not $DashboardDir) {
+  # Default to the parent directory of this script (launch-script -> dashboard)
+  $candidate = Resolve-Path -Path (Join-Path $scriptRoot "..") -ErrorAction SilentlyContinue
+  if ($candidate) { $DashboardDir = $candidate.ProviderPath } else { $DashboardDir = Join-Path $scriptRoot ".." }
+}
+
+if (-not (Test-Path $DashboardDir)) {
+  Write-Warning "DashboardDir '$DashboardDir' does not exist. Installer will continue but may not work as expected."
+}
+
 $buildPath = Join-Path $DashboardDir "build"
 if (-not (Test-Path $buildPath)) {
-  Fail "Build folder not found: $buildPath. Run 'npm run build' first."
+  Write-Warning "Build folder not found: $buildPath. Attempting to build automatically if npm is available."
+  $npmCmd = (Get-Command npm -ErrorAction SilentlyContinue)?.Source
+  if ($npmCmd) {
+    Write-Host "==> Running 'npm run build' in $DashboardDir" -ForegroundColor Cyan
+    try {
+      Push-Location $DashboardDir
+      & $npmCmd run build
+      Pop-Location
+      if (Test-Path $buildPath) { Write-Host "    Build succeeded: $buildPath" -ForegroundColor Green } else { Write-Warning "    Build did not produce a 'build' folder." }
+    } catch {
+      try { Pop-Location } catch {}
+      Write-Warning "    npm build failed: $($_.Exception.Message)"
+    }
+  } else {
+    Write-Warning "    npm not found in PATH; cannot auto-build. Run 'npm run build' in $DashboardDir manually."
+  }
+} else {
+  Write-Host "    Found build folder: $buildPath" -ForegroundColor Green
 }
 
 Write-Host "==> Locating NSSM..." -ForegroundColor Cyan
@@ -70,7 +103,24 @@ Write-Host "    Using: " -NoNewline
 if ($useNodeServeJs) { Write-Host "node + serve.js shim" } else { Write-Host $serveCmd }
 
 Write-Host "==> Preparing logs..." -ForegroundColor Cyan
-New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+## Try to create the configured log dir; if that fails, fall back to writable locations.
+$logCreated = $false
+try {
+  New-Item -ItemType Directory -Force -Path $LogDir -ErrorAction Stop | Out-Null
+  $logCreated = $true
+} catch {
+  Write-Warning "Unable to create log dir '$LogDir': $($_.Exception.Message)"
+}
+if (-not $logCreated) {
+  $fallback1 = Join-Path $DashboardDir "logs"
+  try { New-Item -ItemType Directory -Force -Path $fallback1 -ErrorAction Stop | Out-Null; $LogDir = $fallback1; $logCreated = $true } catch {}
+}
+if (-not $logCreated) {
+  $fallback2 = Join-Path $env:USERPROFILE "LangIdDashboard\logs"
+  try { New-Item -ItemType Directory -Force -Path $fallback2 -ErrorAction Stop | Out-Null; $LogDir = $fallback2; $logCreated = $true } catch {}
+}
+if (-not $logCreated) { Write-Warning "Logs directory could not be created; service will be installed but logs may not be available." }
+
 $stdoutLog = Join-Path $LogDir "dashboard_stdout.log"
 $stderrLog = Join-Path $LogDir "dashboard_stderr.log"
 
