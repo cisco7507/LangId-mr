@@ -12,7 +12,7 @@
 - **Custom EN/FR gating logic**
 - **VAD-based retries**
 - **Fallback scoring**
-- **Background worker threads**
+- **Background worker processes**
 - **Storage + DB job tracking**
 - **Windows Server–friendly deployment**
 - **Dashboard UI**
@@ -39,7 +39,7 @@ Client[Client: cURL / Vantage / Dashboard] --> API[FastAPI Server]
 API -->|Submit job (/jobs)| DB[(SQLite DB)]
 API -->|Store file| Storage[(storage/ Directory)]
 
-Worker[Background Worker Threads] --> DB
+Worker[Background Worker Processes] --> DB
 Worker --> Storage
 Worker --> Whisper[Whisper Model]
 
@@ -119,7 +119,7 @@ Handles:
 - job submission (upload + URL)
 - job querying
 - result retrieval
-- worker thread startup
+- worker process startup
 
 ---
 
@@ -227,7 +227,7 @@ curl http://localhost:8080/jobs/<id>/result
 | `WHISPER_DEVICE` | cpu / cuda |
 | `WHISPER_COMPUTE` | float32 / float16 / int8 |
 | `MAX_UPLOAD_BYTES` | upload limit |
-| `MAX_WORKERS` | number of worker threads |
+| `MAX_WORKERS` | number of worker processes |
 | `DB_URL` | SQLite or external DSN |
 | `STORAGE_DIR` | audio storage directory |
 | `LANG_DETECT_MIN_PROB` | min autodetection probability |
