@@ -19,13 +19,13 @@ At a high level, each job goes through these stages:
 
 ```mermaid
 flowchart LR
-  A["Audio input (upload or URL)"] --> B["Pre-processing (mono 16 kHz + validation)"]
-  B --> C["Language gate (EN/FR only)"]
-  C -->|"high-confidence EN/FR"| D["Transcription"]
-  C -->|"uncertain or other language"| E["VAD retry + EN/FR scoring fallback"]
+  A[Audio input - upload or URL] --> B[Pre-processing - mono 16kHz + validation]
+  B --> C[Language gate - EN/FR only]
+  C --> D[Transcription]
+  C --> E[VAD retry + EN-FR scoring fallback]
   E --> D
-  D --> F["Optional translation (EN↔FR)"]
-  F --> G["Result JSON + metrics + DB (/jobs/{id}/result)"]
+  D --> F[Optional translation - EN-FR]
+  F --> G[Result JSON + metrics + DB]
 ```
 
 ---
@@ -175,22 +175,22 @@ The following decision tree shows how the EN/FR gate handles different cases.
 
 ```mermaid
 flowchart TD
-  Probe["Probe transcript"] --> Music{"music/musique only?"}
-  Music -->|"yes"| MusicOnly["NO_SPEECH_MUSIC_ONLY\n music_only=true"]
-  Music -->|"no"| A["Model prediction (language, probability)"]
+  Probe[Probe transcript] --> Music[music_or_musique_only]
+  Music --> MusicOnly[NO_SPEECH_MUSIC_ONLY - music_only=true]
+  Music --> ModelPred[Model prediction - language and probability]
 
-  A --> B{"language in {en, fr}?"}
+  ModelPred --> NonEnFr[Non-EN-FR decision]
+  NonEnFr --> RejectOrFallback[Reject if strict else fallback scoring]
 
-  B -->|"no"| C{"ENFR_STRICT_REJECT?"}
-  C -->|"yes"| D["Reject request (HTTP 400)\nOnly English/French audio supported"]
-  C -->|"no"| E["EN/FR scoring fallback\nmethod = 'fallback'"]
+  ModelPred --> LowConfidence[Low confidence / mid range]
+  LowConfidence --> VADRetry[VAD retry on speech-only audio]
+  VADRetry --> Confident[Confident EN/FR after VAD]
+  Confident --> AcceptVAD[Accept - autodetect-vad]
+  VADRetry --> Fallback[Fallback scoring]
 
-  B -->|"yes"| F{"probability >= threshold?"}
-  F -->|"yes"| G["Accept\nmethod = 'autodetect'"]
-  F -->|"no"| H["VAD retry on speech-only audio\nmethod = 'autodetect-vad'"]
-  H --> I{"now confident EN/FR?"}
-  I -->|"yes"| G
-  I -->|"no"| E
+  AcceptVAD --> Store[Store result and metrics]
+  MusicOnly --> Store
+  Fallback --> Store
 ```
 
 The exact thresholds and configuration can be tuned, but the structure remains the same:

@@ -35,9 +35,9 @@ This document describes the Pydantic models used in the API.
 
 ```mermaid
 flowchart TD
-	ResultResponse --> LanguageField["language / probability"]
-	ResultResponse --> MusicFlag["music_only flag"]
-	ResultResponse --> RawBlob["raw.lang_gate + transcript"]
+	ResultResponse --> LanguageField[language_and_probability]
+	ResultResponse --> MusicFlag[music_only_flag]
+	ResultResponse --> RawBlob[raw_lang_gate_and_transcript]
 ```
 
 ## SubmitByUrl

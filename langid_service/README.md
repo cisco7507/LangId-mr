@@ -167,17 +167,17 @@ Mermaid flow (compact):
 
 ```mermaid
 flowchart LR
-  Probe[Probe transcript] --> MusicOnly[NO_SPEECH_MUSIC_ONLY\nmusic_only=true]
+  Probe[Probe transcript] --> MusicOnly[NO_SPEECH_MUSIC_ONLY - music_only=true]
   Probe --> Detect[Autodetect probe]
-  Detect --> AcceptHigh[Accept_autodetect]
-  Detect --> MidZone[Mid_zone_heuristics]
-  MidZone --> AcceptMid[Accept_mid_zone]
-  MidZone --> VADRetry[VAD_retry]
+  Detect --> AcceptHigh[Accept - autodetect]
+  Detect --> MidZone[Mid-zone heuristics]
+  MidZone --> AcceptMid[Accept - mid-zone]
+  MidZone --> VADRetry[VAD retry]
   Detect --> VADRetry
-  VADRetry --> AcceptVAD[Accept_autodetect_vad]
-  VADRetry --> Fallback[Fallback_scoring]
-  Fallback --> AcceptFallback[Accept_fallback]
-  VADRetry --> Reject[Reject_400_if_strict]
+  VADRetry --> AcceptVAD[Accept - autodetect-vad]
+  VADRetry --> Fallback[Fallback scoring]
+  Fallback --> AcceptFallback[Accept - fallback]
+  VADRetry --> Reject[Reject - HTTP 400 if strict]
 ```
 
 Runtime metadata: the gate returns a structured `gate_meta` object (and top-level `gate_decision` / `use_vad`) that includes:

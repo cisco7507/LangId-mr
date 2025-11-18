@@ -26,25 +26,25 @@ The service operates on a simple, robust architecture designed for concurrency a
 
 ```mermaid
 graph TD
-    subgraph "Client"
-        A["HTTP Client"]
+    subgraph Client
+        A[HTTP Client]
     end
 
-    subgraph "FastAPI Service"
-        B["REST API Endpoints"]
-        C["Job Queue (SQLite)"]
+    subgraph FastAPI_Service
+        B[REST API Endpoints]
+        C[Job Queue - SQLite]
     end
 
-    subgraph "Background Workers"
-        D1["Worker Thread 1"]
-        D2["Worker Thread 2"]
-        D3["..."]
-        E["Faster-Whisper Model"]
+    subgraph Background_Workers
+        D1[Worker Thread 1]
+        D2[Worker Thread 2]
+        D3[Worker Thread N]
+        E[Faster-Whisper Model]
     end
 
-    subgraph "Storage"
-        F["SQLite Database"]
-        G["Audio File Storage"]
+    subgraph Storage
+        F[SQLite Database]
+        G[Audio File Storage]
     end
 
     A --> B
@@ -52,23 +52,23 @@ graph TD
     C --> F
     B --> G
 
-    D1 -- "Polls for Jobs" --> C
-    D2 -- "Polls for Jobs" --> C
-    D3 -- "Polls for Jobs" --> C
+    D1 --> C
+    D2 --> C
+    D3 --> C
 
-    D1 -- "Loads Model" --> E
-    D2 -- "Loads Model" --> E
-    D3 -- "Loads Model" --> E
+    D1 --> E
+    D2 --> E
+    D3 --> E
 
-    D1 -- "Processes Job" --> F
-    D1 -- "Processes Job" --> G
-    D2 -- "Processes Job" --> F
-    D2 -- "Processes Job" --> G
-    D3 -- "Processes Job" --> F
-    D3 -- "Processes Job" --> G
+    D1 --> F
+    D1 --> G
+    D2 --> F
+    D2 --> G
+    D3 --> F
+    D3 --> G
 
-    A -- "Check Status/Result" --> B
-    B -- "Reads Status/Result" --> F
+    A --> B
+    B --> F
 ```
 
 ## 3. Environment & Configuration
