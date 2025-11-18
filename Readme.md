@@ -44,87 +44,102 @@ Mermaid architecture diagram:
 flowchart TD
   Client[Client] --> API[API Server]
   API --> DB[SQLite Job DB]
-  GET /jobs/{job_id}/result
+  API --> Storage[Audio Storage]
+  WorkerPool[Worker Subsystem] --> DB
+  WorkerPool --> Storage
+  WorkerPool --> Model[Whisper Model]
+  Model --> Gate[ENFR Gate]
+  Gate --> WorkerPool
+  API --> Dashboard[Dashboard]
+```
 
-  ## K. Environment & Pinned Versions
+## C. Full EN/FR Gate Pipeline
 
-  The following lists the exact runtime and Python package versions captured from the project's virtual environment and the system Node.js install used while updating this README.
+This section documents the gate behavior and configuration.
 
-  - **Project virtualenv Python:** `Python 3.12.8`
-  - **Node.js version:** `v22.13.1`
+Autodetect probe
+- The probe is a short audio window decoded and passed to Whisper with `vad_filter=False` for the initial detection.
+- Whisper returns a transcript and a predicted language with probability.
 
-  Pinned Python packages (output of `.venv/bin/pip freeze`):
+Music-only detection (executed before acceptance checks)
+- Normalization: lowercase, remove matching outer brackets ([], (), {}), trim whitespace.
+- Replace musical Unicode markers (♪ ♫ ♩ ♬ ♭ ♯) with token `music`.
+- Tokenize and remove filler tokens (examples: `intro`, `outro`, `playing`, `background`, `soft`, `de`, `fond`, `only`, `song`, `theme`, `jingle`, `play`).
+- If remaining tokens contain only `music` or `musique` plus allowed fillers, short-circuit to `NO_SPEECH_MUSIC_ONLY` with `language = "none"`, `music_only = true`.
 
-  ```text
-  annotated-doc==0.0.4
-  annotated-types==0.7.0
-  anyio==4.11.0
-  av==16.0.1
-  certifi==2025.11.12
-  cffi==2.0.0
-  charset-normalizer==3.4.4
-  click==8.3.1
-  coloredlogs==15.0.1
-  coverage==7.12.0
-  ctranslate2==4.6.1
-  dotenv==0.9.9
-  fastapi==0.121.2
-  faster-whisper==1.2.1
-  filelock==3.20.0
-  flatbuffers==25.9.23
-  fsspec==2025.10.0
-  h11==0.16.0
-  hf-xet==1.2.0
-  httpcore==1.0.9
-  httpx==0.28.1
-  huggingface-hub==0.36.0
-  humanfriendly==10.0
-  idna==3.11
-  iniconfig==2.3.0
-  Jinja2==3.1.6
-  loguru==0.7.3
-  MarkupSafe==3.0.3
-  mpmath==1.3.0
-  networkx==3.5
-  numpy==2.3.5
-  onnxruntime==1.23.2
-  packaging==25.0
-  pluggy==1.6.0
-  prometheus_client==0.20.0
-  protobuf==6.33.1
-  pycparser==2.23
-  pydantic==2.12.4
-  pydantic_core==2.41.5
-  Pygments==2.19.2
-  pytest==9.0.1
-  pytest-cov==7.0.0
-  python-dotenv==1.2.1
-  python-multipart==0.0.20
-  PyYAML==6.0.3
-  regex==2025.11.3
-  requests==2.32.5
-  safetensors==0.6.2
-  sentencepiece==0.2.1
-  setuptools==80.9.0
-  sniffio==1.3.1
-  soundfile==0.13.1
-  SQLAlchemy==2.0.44
-  starlette==0.49.3
-  sympy==1.14.0
-  tokenizers==0.22.1
-  torch==2.9.1
-  torchaudio==2.9.1
-  tqdm==4.67.1
-  transformers==4.57.1
-  typing-inspection==0.4.2
-  typing_extensions==4.15.0
-  urllib3==2.5.0
-  uvicorn==0.38.0
-  ```
+High-confidence accept
+- If autodetect probability >= `LANG_MID_UPPER` and predicted language is `en` or `fr`, accept immediately without VAD.
 
-  If you'd prefer the frozen requirements in a separate file, I can add `requirements-frozen.txt` with the same content and reference it from this README.
+Mid-zone logic
+- If `LANG_MID_LOWER <= probability < LANG_MID_UPPER` and predicted language is `en` or `fr`, compute stopword ratios for EN and FR.
+- Heuristic: require `token_count >= LANG_MIN_TOKENS` and `dominant_ratio - other_ratio >= LANG_STOPWORD_MARGIN` and `dominant_ratio >= LANG_MIN_STOPWORD_{EN|FR}` to accept mid-zone.
+
+VAD retry
+- If the mid-zone heuristic fails, or initial autodetect is below `LANG_MID_LOWER`, re-run detection using VAD-trimmed probe (`vad_filter=True`).
+- If VAD retry yields a confident EN/FR per `LANG_DETECT_MIN_PROB`, accept.
+
+Fallback scoring
+- If VAD retry is insufficient and `ENFR_STRICT_REJECT` is false, perform low-cost scoring/transcription for EN and FR and pick the better-scoring language (`method = fallback`). The fallback may not provide a calibrated probability.
+
+Strict reject
+- If `ENFR_STRICT_REJECT` is true and no path produced a confident EN/FR decision, return HTTP 400 / Reject.
+
+Mermaid decision-tree diagram:
+
+```mermaid
+flowchart TD
+  Probe[Probe transcript] --> MusicCheck[Music-only check]
+  MusicCheck -->|yes| MusicFlag[NO_SPEECH_MUSIC_ONLY - music_only=true]
+  MusicCheck -->|no| Detect[Autodetect probe]
+  Detect -->|p >= LANG_MID_UPPER| AcceptHigh[ACCEPT_AUTODETECT]
+  Detect -->|LANG_MID_LOWER <= p < LANG_MID_UPPER| MidZone[Mid-zone heuristics]
+  MidZone -->|heuristic pass| AcceptMid[ACCEPT_MID_ZONE]
+  MidZone -->|heuristic fail| VADRetry[VAD retry]
+  Detect -->|p < LANG_MID_LOWER OR lang not en/fr| VADRetry
+  VADRetry -->|confident| AcceptVAD[ACCEPT_AUTODETECT_VAD]
+  VADRetry -->|not confident| Fallback[Fallback scoring]
+  Fallback --> AcceptFallback[ACCEPT_FALLBACK]
+  VADRetry -->|reject and strict| Reject[REJECT HTTP 400]
+```
+
+Gate outputs in `result_json`:
+- `gate_decision` (enum), `gate_meta` (detailed metadata), `music_only` (bool), `use_vad` (bool).
+
+## D. Whisper Model + GPU Details
+
+Supported models: `tiny`, `base`, `small`, `medium`, `large-v3`.
+
+Device selection via `WHISPER_DEVICE`: `cpu`, `cuda`, or `auto`.
+`WHISPER_COMPUTE` controls precision: `int8`, `float16`, `float32`.
+
+Notes for Windows:
+- GPU support on Windows depends on drivers and the runtime (CTranslate2/ctranslate2 bindings). CPU-only operation is the most portable option on Windows Server.
+- Very old GPUs (Pascal or earlier) may lack the required compute capability for optimized kernels.
+
+Recommended configurations:
+
+| Use Case | Model | Device | Compute |
+|---|---:|---:|---:|
+| Low-latency Linux GPU | `small`/`base` | `cuda` | `float16`/`int8` |
+| CPU-only Linux/Windows | `base` | `cpu` | `int8` |
+| Highest accuracy | `large-v3` | `cuda` | `float16` |
+
+If GPU is unsupported, set `WHISPER_DEVICE=cpu` and use `WHISPER_COMPUTE=int8` where CPU quantization is supported.
+
+## E. Worker System
+
+Worker behavior:
+- Each worker process polls the DB for queued jobs, claims a job, sets `status=processing`, and runs detection/transcription.
+- Concurrency settings: `MAX_WORKERS` controls process count; `MAX_CONCURRENT_JOBS` controls per-worker parallelism.
+
+Job claim/update notes:
+- Use transactional DB updates to claim and update jobs. Prefer SQLite WAL mode for better concurrency.
 - Persist `result_json` atomically to avoid partial writes.
 
+Mermaid worker flow:
+
+```mermaid
+flowchart LR
   API[API Server] --> DB[SQLite DB]
   Worker[Worker Process] --> DB
   Worker --> Model[Whisper Model]
@@ -155,6 +170,7 @@ Important environment variables and recommended defaults:
 | `LANG_STOPWORD_MARGIN` | `0.05` | Required margin between ratios |
 | `LANG_MIN_TOKENS` | `10` | Min tokens for heuristics |
 | `LANG_DETECT_MIN_PROB` | `0.60` | Min prob to accept VAD autodetect |
+| `ENFR_STRICT_REJECT` | `false` | If true, reject non-EN/FR audio |
 | `APP_HOST` | `0.0.0.0` | API host |
 | `APP_PORT` | `8080` | API port |
 
@@ -185,85 +201,7 @@ GET /jobs/{job_id}
 - Get job status and metadata.
 
 GET /jobs/{job_id}/result
-  ## K. Environment & Pinned Versions
-
-  The following lists the exact runtime and Python package versions captured from the project's virtual environment and the system Node.js install used while updating this README.
-
-  - **Project virtualenv Python:** `Python 3.12.8`
-  - **Node.js version:** `v22.13.1`
-
-  Pinned Python packages (output of `.venv/bin/pip freeze`):
-
-  ```text
-  annotated-doc==0.0.4
-  annotated-types==0.7.0
-  anyio==4.11.0
-  av==16.0.1
-  certifi==2025.11.12
-  cffi==2.0.0
-  charset-normalizer==3.4.4
-  click==8.3.1
-  coloredlogs==15.0.1
-  coverage==7.12.0
-  ctranslate2==4.6.1
-  dotenv==0.9.9
-  fastapi==0.121.2
-  faster-whisper==1.2.1
-  filelock==3.20.0
-  flatbuffers==25.9.23
-  fsspec==2025.10.0
-  h11==0.16.0
-  hf-xet==1.2.0
-  httpcore==1.0.9
-  httpx==0.28.1
-  huggingface-hub==0.36.0
-  humanfriendly==10.0
-  idna==3.11
-  iniconfig==2.3.0
-  Jinja2==3.1.6
-  loguru==0.7.3
-  MarkupSafe==3.0.3
-  mpmath==1.3.0
-  networkx==3.5
-  numpy==2.3.5
-  onnxruntime==1.23.2
-  packaging==25.0
-  pluggy==1.6.0
-  prometheus_client==0.20.0
-  protobuf==6.33.1
-  pycparser==2.23
-  pydantic==2.12.4
-  pydantic_core==2.41.5
-  Pygments==2.19.2
-  pytest==9.0.1
-  pytest-cov==7.0.0
-  python-dotenv==1.2.1
-  python-multipart==0.0.20
-  PyYAML==6.0.3
-  regex==2025.11.3
-  requests==2.32.5
-  safetensors==0.6.2
-  sentencepiece==0.2.1
-  setuptools==80.9.0
-  sniffio==1.3.1
-  soundfile==0.13.1
-  SQLAlchemy==2.0.44
-  starlette==0.49.3
-  sympy==1.14.0
-  tokenizers==0.22.1
-  torch==2.9.1
-  torchaudio==2.9.1
-  tqdm==4.67.1
-  transformers==4.57.1
-  typing-inspection==0.4.2
-  typing_extensions==4.15.0
-  urllib3==2.5.0
-  uvicorn==0.38.0
-  ```
-
-  If you'd prefer the frozen requirements in a separate file, I can add `requirements-frozen.txt` with the same content and reference it from this README.
-
-  ````
+- Get final result JSON for completed job.
 
 GET /metrics
 - Get service metrics.
