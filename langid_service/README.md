@@ -62,27 +62,27 @@ end
 
 ```mermaid
 flowchart LR
-    A[Receive Audio (Upload or URL)] --> B[Save to storage/]
-    B --> C[Create Job in DB]
-    C --> D[Worker Pulls Job]
+  A[Receive Audio - Upload or URL] --> B[Save to storage]
+  B --> C[Create Job in DB]
+  C --> D[Worker Pulls Job]
 
-    D --> E[Probe Audio Segment]
+  D --> E[Probe Audio Segment]
 
-    E --> F1[Whisper Autodetect]
-    F1 -->|lang in {en,fr} AND p >= threshold| G[Accept autodetect]
+  E --> F1[Whisper Autodetect]
+  F1 -->|en/fr & p >= threshold| G[Accept autodetect]
 
-    F1 -->|lang NOT in {en,fr}| H[Reject → VAD Retry]
-    F1 -->|p < threshold| H[Reject → VAD Retry]
+  F1 -->|not en/fr OR p < threshold| H[Reject -> VAD Retry]
 
-    H --> F2[Whisper Autodetect (VAD-cut audio)]
-    F2 -->|good| G
+  H --> F2[Whisper Autodetect (VAD-cut audio)]
+  F2 -->|good| G
 
-    F2 -->|still not EN/FR| I[Fallback Scoring]
-    I --> J[Pick EN vs FR]
+  F2 -->|still not en/fr| I[Fallback Scoring]
+  I --> J[Pick EN or FR]
 
-    G & J --> K[Transcription Snippet Extraction]
-    K --> L[Store Result in DB]
-    L --> M[API Returns Result]
+  G --> K[Transcription Snippet Extraction]
+  J --> K
+  K --> L[Store Result in DB]
+  L --> M[API Returns Result]
 ```
 
 ---
