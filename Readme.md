@@ -203,18 +203,21 @@ Mermaid flow (simplified):
 
 ```mermaid
 flowchart LR
-    A[Probe transcript] -->|music keywords only| MUSIC[Flag music-only]
-    MUSIC --> NO_SPEECH[NO_SPEECH_MUSIC_ONLY \n music_only=true]
-    A -->|otherwise| DETECT[Whisper autodetect (vad_filter=false)]
-    DETECT -->|p >= LANG_MID_UPPER AND lang in {en,fr}| ACCEPT_HIGH[Accept: autodetect]
-    DETECT -->|LANG_MID_LOWER <= p < LANG_MID_UPPER| MID[Mid-zone heuristics]
-    MID -->|heuristic passes| ACCEPT_MID[Accept: mid-zone]
-    MID -->|heuristic fails| VAD[VAD retry (vad_filter=true)]
-    DETECT -->|p < LANG_MID_LOWER OR lang not en/fr| VAD
-    VAD -->|confident EN/FR| ACCEPT_VAD[Accept: autodetect-vad]
-    VAD -->|still not confident| FALLBACK[Fallback scoring (en vs fr)]
-    FALLBACK -->|choose en/fr| ACCEPT_FALLBACK[Accept: fallback]
-    VAD -->|reject AND ENFR_STRICT_REJECT=true| REJECT[Reject HTTP 400]
+    Probe[Probe transcript] --> MusicOnlyCheck[Check for music-only]
+    MusicOnlyCheck --> MusicOnlyFlag[NO_SPEECH_MUSIC_ONLY - music_only=true]
+    Probe --> Detect[Whisper autodetect]
+
+    Detect --> HighAccept[High-confidence accept]
+    Detect --> MidZone[Mid-zone heuristics]
+    MidZone --> MidAccept[Accept mid-zone]
+    MidZone --> VADRetry[VAD retry]
+
+    Detect --> VADRetry
+    VADRetry --> VADAccept[Accept after VAD]
+    VADRetry --> Fallback[Fallback scoring]
+    Fallback --> FallbackAccept[Accept fallback]
+
+    VADRetry --> Reject[Reject HTTP 400 if strict]
 ```
 
 Key environment variables (already in `.env.example`):
