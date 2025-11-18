@@ -375,6 +375,7 @@ def get_result(job_id: str):
             detection_method=raw.get("detection_method"),
             gate_decision=raw.get("gate_decision"),
             gate_meta=raw.get("gate_meta"),
+            music_only=raw.get("music_only", False),
             transcript_snippet=transcript_snippet,
             processing_ms=raw.get("processing_ms", 0),
             original_filename=job.original_filename,

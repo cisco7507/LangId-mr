@@ -22,11 +22,13 @@ def test_submit_and_detect_sync(mock_main_load_audio, mock_runner_load_audio, mo
         "probability": 0.9,
         "method": "direct",
         "gate_decision": "accepted_high_conf",
+        "music_only": False,
         "gate_meta": {
             "mid_zone": False,
             "token_count": 42,
             "stopword_ratio_en": 0.4,
             "stopword_ratio_fr": 0.1,
+            "music_only": False,
         },
     }
 
@@ -67,9 +69,11 @@ def test_submit_and_detect_sync(mock_main_load_audio, mock_runner_load_audio, mo
     assert "language" in js
     assert "probability" in js
     assert js.get("gate_decision") == "accepted_high_conf"
+    assert js.get("music_only") is False
     assert isinstance(js.get("gate_meta"), dict)
     assert js["gate_meta"].get("vad_used") is False
     assert js["gate_meta"].get("mid_zone") is False
+    assert js["gate_meta"].get("music_only") is False
 
 @patch("langid_service.app.main.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
 def test_get_result_for_incomplete_job(mock_load_audio, client):

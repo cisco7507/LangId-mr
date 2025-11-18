@@ -38,6 +38,7 @@ def process_one(session: Session, job: Job) -> None:
 
         # Detect language with EN/FR gate using the in-memory audio
         lang_info = detect_lang_en_fr_only(audio)
+        music_only = bool(lang_info.get("music_only"))
         lang = lang_info["language"]
         detection_method = lang_info.get("method", "autodetect")
         gate_decision = lang_info.get("gate_decision")
@@ -76,40 +77,51 @@ def process_one(session: Session, job: Job) -> None:
             gate_meta.setdefault("token_count", 0)
 
         gate_meta["vad_used"] = bool(use_vad)
+        gate_meta["music_only"] = music_only
 
-        # Transcribe only the first SNIPPET_MAX_SECONDS of audio for the snippet
-        snippet_samples = int(SNIPPET_MAX_SECONDS * 16000)  # 16 kHz mono
-        snippet_audio = audio[:snippet_samples]
+        text = ""
+        snippet = ""
+        raw_info = {
+            "language": lang,
+            "language_probability": prob,
+        }
 
-        model = get_model()
-        segments, info = model.transcribe(
-            snippet_audio,
-            language=lang,
-            beam_size=5,
-            best_of=5,
-            vad_filter=use_vad,
-            suppress_blank=True,
-        )
-        text = " ".join([s.text for s in segments])
-        # Extract only the first 10 spoken words
-        snippet = " ".join(text.split()[:10])
+        if not music_only and lang in {"en", "fr"}:
+            # Transcribe only the first SNIPPET_MAX_SECONDS of audio for the snippet
+            snippet_samples = int(SNIPPET_MAX_SECONDS * 16000)  # 16 kHz mono
+            snippet_audio = audio[:snippet_samples]
 
-        # Make info JSON-serializable (TranscriptionOptions and other objects may be present)
-        if hasattr(info, "_asdict"):
-            raw_info = info._asdict()
+            model = get_model()
+            segments, info = model.transcribe(
+                snippet_audio,
+                language=lang,
+                beam_size=5,
+                best_of=5,
+                vad_filter=use_vad,
+                suppress_blank=True,
+            )
+            text = " ".join([s.text for s in segments])
+            # Extract only the first 10 spoken words
+            snippet = " ".join(text.split()[:10])
+
+            # Make info JSON-serializable (TranscriptionOptions and other objects may be present)
+            if hasattr(info, "_asdict"):
+                raw_info = info._asdict()
+            else:
+                raw_info = {}
+                for k, v in vars(info).items():
+                    try:
+                        # keep primitives / simple containers as-is
+                        json.dumps(v)
+                        raw_info[k] = v
+                    except TypeError:
+                        # fall back to string for non-serializable objects
+                        raw_info[k] = str(v)
+
+            # Drop noisy/verbose fields we don't need to store
+            raw_info.pop("transcription_options", None)
         else:
-            raw_info = {}
-            for k, v in vars(info).items():
-                try:
-                    # keep primitives / simple containers as-is
-                    json.dumps(v)
-                    raw_info[k] = v
-                except TypeError:
-                    # fall back to string for non-serializable objects
-                    raw_info[k] = str(v)
-
-        # Drop noisy/verbose fields we don't need to store
-        raw_info.pop("transcription_options", None)
+            raw_info["note"] = "music-only clip (no transcription run)"
 
         result = {
             "language": lang,
@@ -118,6 +130,7 @@ def process_one(session: Session, job: Job) -> None:
             "detection_method": detection_method,
             "gate_decision": gate_decision,
             "gate_meta": gate_meta,
+            "music_only": music_only,
             "raw": {
                 "text": snippet,
                 "info": raw_info,
@@ -126,7 +139,12 @@ def process_one(session: Session, job: Job) -> None:
         }
 
         # Translate if target language is provided
-        if job.target_lang and job.target_lang != lang:
+        if (
+            job.target_lang
+            and not music_only
+            and lang in {"en", "fr"}
+            and job.target_lang != lang
+        ):
             translated_text = translate_en_fr_only(text, source_lang=lang, target_lang=job.target_lang)
             result["translated"] = True
             result["result"] = translated_text

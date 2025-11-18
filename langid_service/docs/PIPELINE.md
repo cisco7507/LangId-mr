@@ -10,7 +10,7 @@ At a high level, each job goes through these stages:
 
 1. **Input** – Client uploads an audio file or provides a URL.
 2. **Pre-processing** – Audio is decoded and normalized to mono 16 kHz.
-3. **Language gate (EN/FR only)** – We decide whether the audio is English or French, using a combination of direct model output, voice activity detection (VAD) retry, and scoring fallback.
+3. **Language gate (EN/FR only)** – We detect English/French speech, short-circuit music-only transcripts, and then apply voice activity detection (VAD) retries plus scoring fallback when needed.
 4. **Transcription** – We generate a transcript of the speech.
 5. **Translation (optional)** – If enabled, we translate between EN and FR.
 6. **Result packaging & metrics** – We build the final JSON, store it with the job, and update metrics.
@@ -50,69 +50,90 @@ flowchart LR
   - timestamps and other metadata.
 
 ### 2.2 Pre-processing
+  }
+}
+```
 
-**Code touchpoints:**
-- `load_audio_mono_16k` in `langid_service/app/services/audio_io.py`
+**Line-by-line explanation:**
 
-**What happens:**
+- `job_id` – UUID stored in the Jobs table. Use it with `/jobs/{id}`.
+- `language` – The gate’s final EN/FR decision (fallback chooses the "least-wrong" language, here English).
+- `probability` – Zero because the scoring fallback does not emit a calibrated probability.
+- `music_only` – `false`, so the rest of the pipeline (VAD, transcription, optional translation) runs as normal.
+- `detection_method` – Explicitly shows this result came from the fallback branch.
+- `transcript_snippet` – First ~10 words of the Whisper transcript of the snippet window.
+- `processing_ms` – End-to-end processing time. It is zero in this sample because we have not yet wired runtime timing into the worker.
+- `original_filename` – Mirrors the upload filename (`langid_ja_sample.wav`).
+- `raw.language` – Same EN/FR decision seen by the rest of the app, prior to packaging.
+- `raw.probability` – Same as top-level `probability` for backward compatibility.
+- `raw.music_only` – Mirrors the top-level flag for debugging.
+- `raw.text` – Full snippet text (same as `transcript_snippet` here because the sample is short).
+- `raw.detection_method` – Duplicate field for clients that only consume the `raw` blob.
+- `raw.raw.text` – Full snippet again (legacy field retained for compatibility with older dashboards).
+- `raw.raw.info` – Whisper metadata:
+  - `language` / `language_probability` – The speech model believes the transcript text is English after decoding, even though the original speech was Japanese.
+  - `duration` / `duration_after_vad` – Audio was 5.47 s and VAD did not trim any frames.
+- `raw.raw.info.all_language_probs` – `null` because we did not request the full probability distribution.
+- `raw.raw.info.vad_options` – Parameters used when VAD filtering is enabled.
+- `raw.raw.lang_gate.language` – The EN/FR scorer picked English.
+- `raw.raw.lang_gate.probability` – `null` because fallback does not compute a probability, only a relative score.
+- `raw.raw.lang_gate.method` – Confirms fallback was executed inside the gate.
+- `raw.raw.lang_gate.music_only` – `false`, confirming the fallback happened for speech, not the music-only detector.
+- `raw.translated` – `false` because no EN↔FR translation was requested.
 
-- Audio is loaded and converted to a uniform format:
-  - Mono channel
-  - 16 kHz sample rate
-  - Float32 samples
-- We compute basic information such as total audio duration. This is exposed later as:
-  - `raw.info.duration` (seconds)
+### 5.6 Music-only background bed
 
-This stage is mostly about making sure the downstream model sees a consistent audio format.
+**Scenario:**
 
-### 2.3 Language gate (EN/FR only)
+- Short bumper that contains only background music with no spoken words.
+- The probe transcript from Whisper is `"[music]"`.
 
-The language gate ensures we only accept English/French content, and it tries to be robust to noise and ambiguous cases.
+**Flow:**
 
-**Code touchpoints:**
-- `langid_service/app/lang_gate.py`
-- Language checks during job processing in `worker/runner.py`
+1. The music-only detector normalises the transcript (lowercase, strip brackets, ignore filler words like `background` / `de` / `fond`) and recognises it as a music-only phrase, returning `gate_decision="NO_SPEECH_MUSIC_ONLY"`.
+2. `music_only=true`, `language="none"`, and no VAD retry, transcription, or translation takes place.
 
-**Main ideas:**
+**Result excerpt:**
 
-1. **Direct autodetect**
-   - We run the model once on the pre-processed audio.
-   - The model predicts a language code and a confidence:
-     - `raw.info.language`
-     - `raw.info.language_probability`
-   - If the predicted language is in `{"en", "fr"}` and confidence is above a threshold (e.g. 0.8):
-     - We accept it with method **`autodetect`**.
+```json
+{
+  "job_id": "0e5fd3b4-3ec7-46c5-9c3c-80d4c0f2c0ab",
+  "language": "none",
+  "probability": 0.94,
+  "music_only": true,
+  "detection_method": "autodetect",
+  "gate_decision": "NO_SPEECH_MUSIC_ONLY",
+  "transcript_snippet": "",
+  "raw": {
+    "text": "",
+    "info": {
+      "language": "none",
+      "language_probability": 0.94,
+      "note": "music-only clip (no transcription run)"
+    },
+    "lang_gate": {
+      "language": "none",
+      "probability": 0.94,
+      "method": "autodetect",
+      "gate_decision": "NO_SPEECH_MUSIC_ONLY",
+      "music_only": true
+    }
+  },
+  "translated": false
+}
+```
 
-2. **Strict gate**
-   - If `ENFR_STRICT_REJECT` is enabled and the model predicts a language outside EN/FR:
-     - We reject the request with HTTP 400:
-       - "Only English/French audio supported".
+**Line-by-line explanation:**
 
-3. **VAD retry**
-   - If the model is unsure (low confidence) or audio is noisy:
-     - We run voice activity detection (VAD) to remove silence and non-speech segments.
-     - We re-run the model on the speech-only audio.
-     - If the result is now confident enough for EN/FR:
-       - We accept with method **`autodetect-vad`**.
-   - This is where `raw.info.duration_after_vad` comes from.
-
-4. **EN/FR scoring fallback**
-   - If we still cannot confidently categorize the audio or if the language is outside EN/FR but strict mode is off:
-     - We run cheap EN vs FR "scoring" passes and pick the better of the two.
-     - We record the decision as method **`fallback`**.
-
-Each branch stamps a `detection_method` that is propagated to the API response (`autodetect`, `autodetect-vad`, or `fallback`), and the full gate payload is mirrored under `raw.lang_gate` for debugging. The *final* language that the service returns in the top-level JSON is the result of this gate, not necessarily the first guess from the model.
-
-### 2.4 Transcription
-
-Once the language is chosen, we run a transcription pass with the speech model.
-
-- `raw.text`: the full transcript produced by the model.
-- `text` / `transcript_snippet`: a snippet of that transcript, used in the API and dashboard for quick inspection.
-
-Transcription happens once per job (we don't re-transcribe in the fallback path; that is handled internally by the gate module).
-
-### 2.5 Optional translation
+- `job_id` – UUID stored in the Jobs table.
+- `language` – `"none"` indicates the clip was flagged as music-only.
+- `probability` – Confidence reported by the initial autodetect pass (before the gate overrode the language).
+- `music_only` – `true`, so downstream steps skip VAD retry, transcription, and translation.
+- `detection_method` / `gate_decision` – Document the branch that short-circuited the gate.
+- `transcript_snippet` – Empty because no transcription runs.
+- `raw.info.note` – Explains why the snippet is empty and that no transcription was attempted.
+- `raw.lang_gate.music_only` – Mirrors the flag inside the gate metadata for debugging.
+- `translated` – Always `false` for music-only clips.
 
 In deployments where translation is enabled:
 
@@ -154,7 +175,11 @@ The following decision tree shows how the EN/FR gate handles different cases.
 
 ```mermaid
 flowchart TD
-  A["Model prediction (language, probability)"] --> B{"language in {en, fr}?"}
+  Probe["Probe transcript"] --> Music{"music/musique only?"}
+  Music -->|"yes"| MusicOnly["NO_SPEECH_MUSIC_ONLY\n music_only=true"]
+  Music -->|"no"| A["Model prediction (language, probability)"]
+
+  A --> B{"language in {en, fr}?"}
 
   B -->|"no"| C{"ENFR_STRICT_REJECT?"}
   C -->|"yes"| D["Reject request (HTTP 400)\nOnly English/French audio supported"]
@@ -183,15 +208,16 @@ This table shows where each field in the result JSON comes from.
 | Field                           | Type        | Stage                      | Meaning                                                                 |
 |---------------------------------|-------------|---------------------------|-------------------------------------------------------------------------|
 | `job_id`                        | string      | Result packaging          | Unique identifier of the job.                                          |
-| `language`                      | string      | Language gate             | Final chosen language code for the audio (e.g. `"en"`, `"fr"`).       |
+| `language`                      | string      | Language gate             | Final chosen language code for the audio (e.g. `"en"`, `"fr"`, or `"none"` for music-only clips). |
 | `probability`                   | float [0–1] | Language gate             | Confidence that `language` is correct.                                  |
 | `detection_method`              | enum        | Language gate             | Which branch accepted the audio: `autodetect`, `autodetect-vad`, `fallback`. |
 | `text` / `transcript_snippet`   | string      | Transcription             | Human-readable snippet of the transcript.                               |
 | `processing_ms`                 | integer     | Result packaging          | End-to-end processing time for this job in milliseconds.                |
 | `original_filename`             | string      | Input                     | Original filename provided by the client or URL basename.               |
 | `translated`                    | bool        | Translation               | `true` if a translation step was applied, otherwise `false`.            |
+| `music_only`                    | bool        | Language gate             | `true` when the probe matched the music-only detector (no speech, transcription skipped). |
 | `raw.text`                      | string      | Transcription             | Full transcript returned by the speech model.                           |
-| `raw.info.language`             | string      | Model internals           | Language predicted by the model before gate logic.                      |
+| `raw.info.language`             | string      | Model internals           | Language predicted by the model before gate logic (or `"none"` for music-only clips where transcription is skipped). |
 | `raw.info.language_probability` | float [0–1] | Model internals           | Confidence for `raw.info.language`.                                     |
 | `raw.info.duration`             | float       | Pre-processing            | Original audio duration in seconds.                                     |
 | `raw.info.duration_after_vad`   | float       | VAD                       | Duration of speech-only audio after VAD, in seconds.                    |
@@ -290,6 +316,7 @@ This behaviour explains the errors you may see in the dashboard when the input i
   "job_id": "c809ab4a-e2ca-4cc5-85ba-388e5a631bfe",
   "language": "en",
   "probability": 0.8854513764381409,
+  "music_only": false,
   "detection_method": "autodetect",
   "transcript_snippet": "Ola, STS Una Jemplo and Esponial Paraforza L-Fallback Del Detector",
   "processing_ms": 0,
@@ -297,6 +324,7 @@ This behaviour explains the errors you may see in the dashboard when the input i
   "raw": {
     "language": "en",
     "probability": 0.8854513764381409,
+    "music_only": false,
     "text": "Ola, STS Una Jemplo and Esponial Paraforza L-Fallback Del Detector",
     "detection_method": "autodetect",
     "raw": {
@@ -312,7 +340,8 @@ This behaviour explains the errors you may see in the dashboard when the input i
       "lang_gate": {
         "language": "en",
         "probability": 0.8854513764381409,
-        "method": "autodetect"
+        "method": "autodetect",
+        "music_only": false
       }
     },
     "translated": false
@@ -342,6 +371,7 @@ This behaviour explains the errors you may see in the dashboard when the input i
   "job_id": "d71d336b-b468-4a97-9742-5a4ac66c6722",
   "language": "en",
   "probability": 0.0,
+  "music_only": false,
   "detection_method": "fallback",
   "transcript_snippet": "Hello, this is the sample for testing the default back",
   "processing_ms": 0,
@@ -349,6 +379,7 @@ This behaviour explains the errors you may see in the dashboard when the input i
   "raw": {
     "language": "en",
     "probability": 0.0,
+    "music_only": false,
     "text": "Hello, this is the sample for testing the default back",
     "detection_method": "fallback",
     "raw": {
@@ -364,12 +395,54 @@ This behaviour explains the errors you may see in the dashboard when the input i
       "lang_gate": {
         "language": "en",
         "probability": null,
-        "method": "fallback"
+        "method": "fallback",
+        "music_only": false
+      }
+    },
+    "translated": false
+  -
+  ```
+
+  ### 5.6 Music-only background bed
+
+  **Scenario:**
+
+  - Short bumper that contains only background music with no spoken words.
+  - The probe transcript from Whisper is `"[music]"`.
+
+  **Flow:**
+
+  1. The music-only detector recognises the transcript (`music` keyword, single token) and returns `gate_decision="NO_SPEECH_MUSIC_ONLY"`.
+  2. `music_only=true`, `language="none"`, and no VAD retry, transcription, or translation takes place.
+
+  **Result excerpt:**
+
+  ```json
+  {
+    "job_id": "0e5fd3b4-3ec7-46c5-9c3c-80d4c0f2c0ab",
+    "language": "none",
+    "probability": 0.94,
+    "music_only": true,
+    "detection_method": "autodetect",
+    "gate_decision": "NO_SPEECH_MUSIC_ONLY",
+    "transcript_snippet": "",
+    "raw": {
+      "text": "",
+      "info": {
+        "language": "none",
+        "language_probability": 0.94,
+        "note": "music-only clip (no transcription run)"
+      },
+      "lang_gate": {
+        "language": "none",
+        "probability": 0.94,
+        "method": "autodetect",
+        "gate_decision": "NO_SPEECH_MUSIC_ONLY",
+        "music_only": true
       }
     },
     "translated": false
   }
-}
 ```
 
 **Line-by-line explanation:**

@@ -47,10 +47,10 @@ graph TD
         G["Audio File Storage"]
     end
 
-    A -- "Upload/URL" --> B
-    B -- "Enqueues Job" --> C
-    C -- "Stores Job" --> F
-    B -- "Stores File" --> G
+    A --> B
+    B --> C
+    C --> F
+    B --> G
 
     D1 -- "Polls for Jobs" --> C
     D2 -- "Polls for Jobs" --> C
@@ -60,9 +60,12 @@ graph TD
     D2 -- "Loads Model" --> E
     D3 -- "Loads Model" --> E
 
-    D1 -- "Processes Job" --> F & G
-    D2 -- "Processes Job" --> F & G
-    D3 -- "Processes Job" --> F & G
+    D1 -- "Processes Job" --> F
+    D1 -- "Processes Job" --> G
+    D2 -- "Processes Job" --> F
+    D2 -- "Processes Job" --> G
+    D3 -- "Processes Job" --> F
+    D3 -- "Processes Job" --> G
 
     A -- "Check Status/Result" --> B
     B -- "Reads Status/Result" --> F
@@ -192,24 +195,22 @@ VAD is a technique used to identify and segment speech in an audio stream. While
 
 ### Gate Flow (EN / FR)
 
-The service implements a conservative EN/FR gate to ensure downstream processing only proceeds on audio that is likely English or French. The gate uses a multi-step flow:
+The service implements a conservative EN/FR gate to ensure downstream processing only proceeds on audio that is likely English or French. A lightweight “music-only” detector runs before any language checks so that background music does not masquerade as speech.
 
-- 1) **Autodetect probe (no VAD):** run Whisper autodetect on a short probe (first ~30s).
-- 2) **High confidence accept:** if autodetect probability >= `LANG_MID_UPPER`, accept immediately.
-- 3) **Mid-zone heuristics:** if probability is in `[LANG_MID_LOWER, LANG_MID_UPPER)`, and the detected language is `en` or `fr`, apply a cheap stopword-ratio heuristic on the probe transcript to decide whether to accept without running VAD. Thresholds are configurable (see `.env` variables below).
-- 4) **VAD retry:** if the probe fails the above checks, retry autodetection on a VAD-trimmed probe (helps when silence/noise biases detection).
-- 5) **Fallback / scoring:** if VAD retry still doesn't produce a confident EN/FR result and `ENFR_STRICT_REJECT` is `false`, run a low-cost scoring pass comparing English vs French on the probe and pick the better-scoring language.
-- 6) **Strict reject:** if `ENFR_STRICT_REJECT=true` and no confident EN/FR decision was made, the request is rejected with HTTP 400.
+ 0) **Music-only transcript detector:** if, after lowercasing and stripping outer brackets, the probe transcript contains only `music`/`musique` plus allowed filler words (for example `"Music"`, `"[music]"`, `"background music"`, `"musique de fond"`), we classify the job as `NO_SPEECH_MUSIC_ONLY`, set `music_only=true`, report `language="none"`, and skip all EN/FR heuristics.
 
 Mermaid flow (simplified):
 
 ```mermaid
 flowchart LR
-    A[Probe: Whisper autodetect (vad_filter=false)] -->|p >= LANG_MID_UPPER AND lang in {en,fr}| ACCEPT_HIGH[Accept: autodetect]
-    A -->|LANG_MID_LOWER <= p < LANG_MID_UPPER| MID[Mid-zone heuristics (stopword ratios)]
+    A[Probe transcript] -->|music keywords only| MUSIC[Flag music-only]
+    MUSIC --> NO_SPEECH[NO_SPEECH_MUSIC_ONLY \n music_only=true]
+    A -->|otherwise| DETECT[Whisper autodetect (vad_filter=false)]
+    DETECT -->|p >= LANG_MID_UPPER AND lang in {en,fr}| ACCEPT_HIGH[Accept: autodetect]
+    DETECT -->|LANG_MID_LOWER <= p < LANG_MID_UPPER| MID[Mid-zone heuristics]
     MID -->|heuristic passes| ACCEPT_MID[Accept: mid-zone]
-    MID -->|heuristic fails| VAD[VAD retry: Whisper autodetect (vad_filter=true)]
-    A -->|p < LANG_MID_LOWER OR lang not en/fr| VAD
+    MID -->|heuristic fails| VAD[VAD retry (vad_filter=true)]
+    DETECT -->|p < LANG_MID_LOWER OR lang not en/fr| VAD
     VAD -->|confident EN/FR| ACCEPT_VAD[Accept: autodetect-vad]
     VAD -->|still not confident| FALLBACK[Fallback scoring (en vs fr)]
     FALLBACK -->|choose en/fr| ACCEPT_FALLBACK[Accept: fallback]
@@ -226,7 +227,7 @@ Key environment variables (already in `.env.example`):
 - `LANG_DETECT_MIN_PROB` — probability threshold used to accept VAD-assisted autodetect (default 0.6)
 - `ENFR_STRICT_REJECT` — when `true` the service will `HTTP 400` if a confident EN/FR decision cannot be made.
 
-The API result JSON for a completed job now includes `gate_decision`, `gate_meta`, and `use_vad` fields so callers can inspect how the gate made its decision and what configuration influenced it.
+The API result JSON for a completed job now includes `gate_decision`, `gate_meta`, `music_only`, and `use_vad` fields so callers can inspect how the gate made its decision, whether the clip was flagged as background music, and which configuration values were in effect.
 
 ## 7. API Reference
 

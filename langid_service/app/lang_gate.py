@@ -1,4 +1,3 @@
-# langid_service/app/lang_gate.py
 from typing import Dict, Any
 import os
 import re
@@ -22,6 +21,37 @@ FR_STOPWORDS = {
     "le", "la", "les", "un", "une", "des", "et", "ou", "mais", "que",
     "qui", "pour", "avec", "sur", "pas", "ce", "cette", "est", "sont",
     "je", "tu", "il", "elle", "nous", "vous", "ils", "elles",
+}
+
+MUSIC_KEYWORDS = {"music", "musique"}
+MUSIC_UNICODE_MARKERS = {"♪", "♫", "♩", "♬", "♭", "♯"}
+MUSIC_FILLER_TOKENS = {
+    "background",
+    "bg",
+    "only",
+    "instrumental",
+    "ambience",
+    "ambiance",
+    "ambient",
+    "soundtrack",
+    "track",
+    "outro",
+    "intro",
+    "playing",
+    "play",
+    "song",
+    "soft",
+    "theme",
+    "jingle",
+    "de",
+    "du",
+    "fond",
+}
+BRACKET_PAIRS = {
+    "[": "]",
+    "(": ")",
+    "{": "}",
+    "<": ">",
 }
 
 MID_LOWER = float(os.getenv("LANG_MID_LOWER", 0.60))
@@ -50,6 +80,60 @@ def compute_stopword_ratio(text: str, stopwords: set[str]) -> float:
     return hits / len(tokens)
 
 
+def _strip_outer_brackets(text: str) -> str:
+    """Remove matching outer brackets, one layer at a time."""
+    stripped = text
+    while len(stripped) >= 2 and stripped[0] in BRACKET_PAIRS:
+        closing = BRACKET_PAIRS[stripped[0]]
+        if stripped[-1] != closing:
+            break
+        stripped = stripped[1:-1].strip()
+    return stripped
+
+
+def is_music_only_transcript(text: str, music_keywords: list[str] | set[str] | None = None) -> bool:
+    """Return True when the transcript represents background music only."""
+    if text is None:
+        return False
+
+    working = text.strip()
+    if not working:
+        return False
+
+    # Normalize Unicode music symbols to a "music" placeholder before further processing
+    for marker in MUSIC_UNICODE_MARKERS:
+        if marker in working:
+            working = working.replace(marker, " music ")
+
+    working = _strip_outer_brackets(working.lower())
+    if not working:
+        return False
+
+    tokens = tokenize_text(working)
+    if not tokens:
+        return False
+
+    keywords = {token.lower() for token in (music_keywords or MUSIC_KEYWORDS)}
+    fillers = MUSIC_FILLER_TOKENS
+
+    # All tokens must be either keywords or fillers for this to count
+    if not all(token in keywords or token in fillers for token in tokens):
+        return False
+
+    # Drop filler tokens; if what's left is 1–2 pure music keywords, treat as music-only
+    filtered = [token for token in tokens if token not in fillers]
+    if not filtered:
+        return False
+    if len(filtered) <= 2 and all(token in keywords for token in filtered):
+        return True
+
+    # Special-case: allow longer runs of pure music markers/keywords
+    if all(token in keywords for token in filtered):
+        return True
+
+    return False
+
+
 def _safe_probability(value: Any) -> float:
     try:
         return float(value)
@@ -67,6 +151,7 @@ def _build_gate_result(
     en_ratio: float,
     fr_ratio: float,
     token_count: int,
+    music_only: bool,
 ) -> Dict[str, Any]:
     raw_prob = probability
     prob_value = _safe_probability(probability)
@@ -78,6 +163,7 @@ def _build_gate_result(
         "stopword_ratio_fr": fr_ratio,
         "token_count": token_count,
         "vad_used": use_vad,
+        "music_only": music_only,
         "config": {
             "mid_lower": MID_LOWER,
             "mid_upper": MID_UPPER,
@@ -85,6 +171,7 @@ def _build_gate_result(
             "min_stopword_fr": MID_FR_MIN_STOPWORD_RATIO,
             "stopword_margin": STOPWORD_MARGIN,
             "min_tokens": MIN_TOKENS_FOR_HEURISTIC,
+            "music_keywords": sorted(MUSIC_KEYWORDS),
         },
     }
     return {
@@ -94,6 +181,7 @@ def _build_gate_result(
         "gate_decision": gate_decision,
         "gate_meta": gate_meta,
         "use_vad": use_vad,
+        "music_only": music_only,
     }
 
 def _create_audio_probe(audio: np.ndarray) -> np.ndarray:
@@ -139,7 +227,15 @@ def validate_language_strict(audio: np.ndarray):
     """
     model = get_model()
     probe_audio = _create_audio_probe(audio)
-    _, info = model.transcribe(probe_audio, vad_filter=False, beam_size=1)
+    segments, info = model.transcribe(probe_audio, vad_filter=False, beam_size=1)
+    transcript = " ".join([getattr(seg, "text", "") for seg in segments if getattr(seg, "text", "")])
+
+    if is_music_only_transcript(transcript):
+        raise HTTPException(
+            status_code=400,
+            detail="Only English/French speech supported (music-only content detected).",
+        )
+
     detected_lang = info.language
     probability = info.language_probability
 
@@ -169,9 +265,33 @@ def detect_lang_en_fr_only(audio: np.ndarray) -> Dict[str, Any]:
     prob_value = _safe_probability(probability)
     logger.info(f"detect(probe): autodetect={detected_lang} p={prob_value:.2f}")
 
-    token_count = len(tokenize_text(transcript))
+    # Debug: inspect transcript, tokens, and music-only probe classification
+    tokens = tokenize_text(transcript)
+    token_count = len(tokens)
+    music_only = is_music_only_transcript(transcript)
+    logger.info(
+        "GATE DEBUG: transcript={!r} tokens={!r} music_only_probe={!r}",
+        transcript,
+        tokens,
+        music_only,
+    )
+
     en_ratio = compute_stopword_ratio(transcript, EN_STOPWORDS)
     fr_ratio = compute_stopword_ratio(transcript, FR_STOPWORDS)
+
+    if music_only:
+        logger.info("Autodetect transcript indicates background music only; classifying as NO_SPEECH_MUSIC_ONLY.")
+        return _build_gate_result(
+            language="none",
+            probability=probability,
+            method="autodetect",
+            gate_decision="NO_SPEECH_MUSIC_ONLY",
+            use_vad=False,
+            en_ratio=0.0,
+            fr_ratio=0.0,
+            token_count=token_count,
+            music_only=True,
+        )
 
     if detected_lang in ALLOWED_LANGS:
         if prob_value >= MID_UPPER:
@@ -188,6 +308,7 @@ def detect_lang_en_fr_only(audio: np.ndarray) -> Dict[str, Any]:
                 en_ratio=en_ratio,
                 fr_ratio=fr_ratio,
                 token_count=token_count,
+                music_only=False,
             )
 
         if prob_value >= MID_LOWER and detected_lang in {"en", "fr"}:
@@ -210,6 +331,7 @@ def detect_lang_en_fr_only(audio: np.ndarray) -> Dict[str, Any]:
                     en_ratio=en_ratio,
                     fr_ratio=fr_ratio,
                     token_count=token_count,
+                    music_only=False,
                 )
 
             if (
@@ -231,6 +353,7 @@ def detect_lang_en_fr_only(audio: np.ndarray) -> Dict[str, Any]:
                     en_ratio=en_ratio,
                     fr_ratio=fr_ratio,
                     token_count=token_count,
+                    music_only=False,
                 )
 
     # 2. VAD retry if confidence is low or heuristics rejected the mid-zone case
@@ -257,6 +380,7 @@ def detect_lang_en_fr_only(audio: np.ndarray) -> Dict[str, Any]:
             en_ratio=en_ratio,
             fr_ratio=fr_ratio,
             token_count=token_count,
+            music_only=False,
         )
 
     # 3. Handle non-EN/FR or persistent low confidence
@@ -281,4 +405,5 @@ def detect_lang_en_fr_only(audio: np.ndarray) -> Dict[str, Any]:
         en_ratio=en_ratio,
         fr_ratio=fr_ratio,
         token_count=token_count,
+        music_only=False,
     )

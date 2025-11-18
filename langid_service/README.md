@@ -34,26 +34,25 @@ This system is highly robust for:
 ```mermaid
 flowchart TD
 
-Client[Client: cURL / Vantage / Dashboard] --> API[FastAPI Server]
+flow_A[Client] --> flow_B[API]
 
-API -->|Submit job (/jobs)| DB[(SQLite DB)]
-API -->|Store file| Storage[(storage/ Directory)]
+flow_B --> flow_DB[SQLite]
+flow_B --> flow_Storage[Storage]
 
-Worker[Background Worker Processes] --> DB
-Worker --> Storage
-Worker --> Whisper[Whisper Model]
+flow_Worker[Workers] --> flow_DB
+flow_Worker --> flow_Storage
+flow_Worker --> flow_Whisper[Whisper]
 
-Whisper --> Gate[EN/FR Gate + VAD Retry]
-Gate --> Worker
-Worker --> DB
+flow_Whisper --> flow_Gate[Gate]
+flow_Gate --> flow_Worker
 
-Dashboard --> API
+flow_Dashboard[Dashboard] --> flow_B
 
 subgraph Host
-    API
-    Worker
-    DB
-    Storage
+  flow_B
+  flow_Worker
+  flow_DB
+  flow_Storage
 end
 ```
 
@@ -150,6 +149,8 @@ Responsible for:
 
 Core logic and gate flow:
 
+0. **Music-only probe detection** — before any language thresholds are applied, the probe transcript is normalised (lowercased, outer brackets removed, filler words pruned). If the remaining tokens are just `music` / `musique` plus allowed fillers such as `background`, `only`, or the French `de` / `fond`, the gate immediately returns `NO_SPEECH_MUSIC_ONLY` with `music_only=true`, bypassing all EN/FR heuristics and VAD retries.
+
 1. **Autodetect probe (no VAD)** — a short probe (first ~30s) is sent to the model with `vad_filter=False` and cheap decoding settings. The model returns an autodetected language and a probability.
 
 2. **High-confidence accept** — if the autodetect probability >= `LANG_MID_UPPER` and the detected language is `en` or `fr`, the gate accepts immediately and processing continues.
@@ -166,25 +167,28 @@ Mermaid flow (compact):
 
 ```mermaid
 flowchart LR
-  Probe[Autodetect probe (no VAD)] -->|p >= LANG_MID_UPPER| AcceptHigh[Accept (autodetect)]
-  Probe -->|LANG_MID_LOWER <= p < LANG_MID_UPPER| MidZone[Mid-zone heuristics (stopword ratios)]
-  MidZone -->|heuristic ok| AcceptMid[Accept (mid-zone)]
-  MidZone -->|heuristic fails| VADRetry[VAD retry]
-  Probe -->|p < LANG_MID_LOWER OR non-EN/FR| VADRetry
-  VADRetry -->|confident| AcceptVAD[Accept (autodetect-vad)]
-  VADRetry -->|still low| Fallback[Fallback scoring (en vs fr)]
-  Fallback -->|chosen| AcceptFallback[Accept (fallback)]
-  VADRetry -->|reject AND ENFR_STRICT_REJECT=true| Reject[Reject (400)]
+  Probe[Probe transcript] --> MusicOnly[NO_SPEECH_MUSIC_ONLY\nmusic_only=true]
+  Probe --> Detect[Autodetect probe]
+  Detect --> AcceptHigh[Accept_autodetect]
+  Detect --> MidZone[Mid_zone_heuristics]
+  MidZone --> AcceptMid[Accept_mid_zone]
+  MidZone --> VADRetry[VAD_retry]
+  Detect --> VADRetry
+  VADRetry --> AcceptVAD[Accept_autodetect_vad]
+  VADRetry --> Fallback[Fallback_scoring]
+  Fallback --> AcceptFallback[Accept_fallback]
+  VADRetry --> Reject[Reject_400_if_strict]
 ```
 
 Runtime metadata: the gate returns a structured `gate_meta` object (and top-level `gate_decision` / `use_vad`) that includes:
 
 - `mid_zone`: whether the probe probability fell into the mid-range
-- `language`: chosen language (`en` or `fr`)
+- `language`: chosen language (`en`, `fr`, or `none` when music-only)
 - `probability`: the raw probability from autodetect (or `null` for fallback)
 - `stopword_ratio_en` / `stopword_ratio_fr`: heuristics used for mid-zone decisions
 - `token_count`: number of tokens in the probe transcript used for heuristics
 - `vad_used`: whether the VAD retry was used
+- `music_only`: whether the music-only detector short-circuited the gate
 - `config`: echo of the key gate configuration values (the `LANG_*` env vars used at runtime)
 
 Note: the mid-zone and stopword heuristics are intentionally conservative — their purpose is to avoid unnecessary VAD/transcription work when the probe already shows clear language-signals, while still allowing a robust fallback path when uncertain.
@@ -192,6 +196,8 @@ Note: the mid-zone and stopword heuristics are intentionally conservative — th
 Audio loader robustness
 
 Parallel to the gate logic, the service now prefers `libsndfile` (via the Python `soundfile` binding) for decoding uploaded audio. This improves support for PCM variants such as 24-bit WAV files that previously caused worker crashes (`Unsupported sample width: 3`). When `soundfile` is not available the loader falls back to the stdlib `wave` reader (with explicit 24-bit handling) and then to `PyAV` as a last resort. This ordering reduces decoding failures and surfaces the original decoder error when all fallbacks fail.
+
+The worker stores `music_only` alongside `gate_decision`, so API consumers can display or filter out clips that contain only background music. When `music_only=true`, the worker skips snippet transcription and translation, returns `language="none"`, and notes the condition under `raw.info.note`.
 
 ---
 

@@ -25,6 +25,8 @@ def test_detect_autodetect_accepts_en(mock_get_model):
     assert result["gate_decision"] == "accepted_high_conf"
     assert result["use_vad"] is False
     assert result["gate_meta"]["mid_zone"] is False
+    assert result["music_only"] is False
+    assert result["gate_meta"]["music_only"] is False
 
 @patch("langid_service.app.lang_gate.get_model")
 def test_detect_autodetect_accepts_fr(mock_get_model):
@@ -38,6 +40,8 @@ def test_detect_autodetect_accepts_fr(mock_get_model):
     assert result["gate_decision"] == "accepted_high_conf"
     assert result["use_vad"] is False
     assert result["gate_meta"]["mid_zone"] is False
+    assert result["music_only"] is False
+    assert result["gate_meta"]["music_only"] is False
 
 
 @patch("langid_service.app.lang_gate.get_model")
@@ -57,6 +61,7 @@ def test_mid_zone_en_accepts_without_vad(mock_get_model):
     assert result["gate_meta"]["mid_zone"] is True
     assert result["gate_meta"]["vad_used"] is False
     assert mock_model.transcribe.call_count == 1
+    assert result["music_only"] is False
 
 
 @patch("langid_service.app.lang_gate.get_model")
@@ -75,6 +80,7 @@ def test_mid_zone_fr_accepts_without_vad(mock_get_model):
     assert result["gate_meta"]["mid_zone"] is True
     assert result["gate_meta"]["vad_used"] is False
     assert mock_model.transcribe.call_count == 1
+    assert result["music_only"] is False
 
 
 @patch("langid_service.app.lang_gate.get_model")
@@ -99,6 +105,7 @@ def test_mid_zone_sketchy_triggers_vad(mock_get_model):
     assert result["method"] == "autodetect-vad"
     assert result["gate_meta"]["vad_used"] is True
     assert mock_model.transcribe.call_count == 2
+    assert result["music_only"] is False
 
 @patch("langid_service.app.lang_gate.pick_en_or_fr_by_scoring")
 @patch("langid_service.app.lang_gate.get_model")
@@ -114,6 +121,7 @@ def test_detect_fallback_picks_en_or_fr(mock_get_model, mock_scoring):
     assert result["gate_decision"] == "fallback"
     assert result["use_vad"] is True
     assert result["probability"] is None
+    assert result["music_only"] is False
 
 @patch("langid_service.app.lang_gate.get_model")
 def test_strict_reject_blocks_non_en_fr(mock_get_model, monkeypatch):
@@ -169,6 +177,7 @@ def test_detect_vad_retry(mock_get_model):
     assert result["gate_decision"] == "vad_retry"
     assert result["use_vad"] is True
     assert result["gate_meta"]["vad_used"] is True
+    assert result["music_only"] is False
 
 @patch("langid_service.app.lang_gate.get_model")
 def test_scoring_uses_cheap_settings(mock_get_model):
@@ -182,3 +191,51 @@ def test_scoring_uses_cheap_settings(mock_get_model):
     for call in mock_model.transcribe.call_args_list:
         assert call.kwargs["beam_size"] == 1
         assert call.kwargs["best_of"] == 1
+
+
+@pytest.mark.parametrize("transcript", ["Music", "[music]", "musique"])
+@patch("langid_service.app.lang_gate.get_model")
+def test_detect_music_only(mock_get_model, transcript):
+    mock_model = MagicMock()
+    mock_model.transcribe.return_value = (
+        [SimpleNamespace(text=transcript)],
+        SimpleNamespace(language="en", language_probability=0.92),
+    )
+    mock_get_model.return_value = mock_model
+
+    result = detect_lang_en_fr_only(dummy_audio)
+    assert result["gate_decision"] == "NO_SPEECH_MUSIC_ONLY"
+    assert result["music_only"] is True
+    assert result["language"] == "none"
+    assert result["use_vad"] is False
+    assert result["gate_meta"]["music_only"] is True
+    assert result["gate_meta"]["mid_zone"] is False
+    assert result["gate_meta"]["token_count"] <= 2
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "♪",
+        "[♪]",
+        "[♫ OUTRO MUSIC PLAYING ♫]",
+        "♬ soft music ♬",
+        "♪ musique ♪",
+    ],
+)
+@patch("langid_service.app.lang_gate.get_model")
+def test_detect_music_only_with_unicode_markers(mock_get_model, transcript):
+    mock_model = MagicMock()
+    mock_model.transcribe.return_value = (
+        [SimpleNamespace(text=transcript)],
+        SimpleNamespace(language="en", language_probability=0.92),
+    )
+    mock_get_model.return_value = mock_model
+
+    result = detect_lang_en_fr_only(dummy_audio)
+    assert result["gate_decision"] == "NO_SPEECH_MUSIC_ONLY"
+    assert result["music_only"] is True
+    assert result["language"] == "none"
+    assert result["use_vad"] is False
+    assert result["gate_meta"]["music_only"] is True
+    assert result["gate_meta"]["mid_zone"] is False

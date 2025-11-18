@@ -26,6 +26,7 @@ class ResultResponse(BaseModel):
     detection_method: Optional[str] = None
     gate_decision: Optional[str] = None
     gate_meta: Optional[dict] = None
+    music_only: bool = False
     transcript_snippet: Optional[str] = None
     processing_ms: int
     original_filename: Optional[str] = None
