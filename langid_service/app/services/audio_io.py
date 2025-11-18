@@ -11,9 +11,44 @@ import wave
 import soundfile as sf
 from io import BytesIO
 
+
 class InvalidAudioError(ValueError):
     """Custom exception for audio processing errors."""
     pass
+
+
+def _resample_to_16k(audio: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Linearly resample a mono signal to 16 kHz."""
+    if sample_rate == 16000 or sample_rate <= 0 or audio.size == 0:
+        return audio.astype(np.float32)
+
+    import math
+
+    target_len = int(math.ceil(len(audio) * 16000.0 / float(sample_rate)))
+    if target_len <= 0:
+        raise InvalidAudioError("Resampling produced no samples.")
+
+    x_old = np.linspace(
+        0.0, 1.0, num=len(audio), endpoint=False, dtype=np.float32
+    )
+    x_new = np.linspace(
+        0.0, 1.0, num=target_len, endpoint=False, dtype=np.float32
+    )
+    return np.interp(x_new, x_old, audio).astype(np.float32)
+
+
+def _load_with_soundfile(file_path: str) -> np.ndarray:
+    """Decode audio via soundfile, producing mono float32 at 16 kHz."""
+    try:
+        audio, sample_rate = sf.read(file_path, dtype="float32", always_2d=False)
+    except Exception as exc:
+        raise InvalidAudioError(f"Failed to decode audio via soundfile: {exc}") from exc
+
+    if isinstance(audio, np.ndarray) and audio.ndim > 1:
+        audio = audio.mean(axis=1)
+
+    audio = np.asarray(audio, dtype=np.float32)
+    return _resample_to_16k(audio, sample_rate)
 
 def load_audio_mono_16k(file_path: str) -> np.ndarray:
     """
@@ -27,6 +62,17 @@ def load_audio_mono_16k(file_path: str) -> np.ndarray:
     Raises:
         InvalidAudioError: If the audio cannot be decoded or processed.
     """
+    first_error: InvalidAudioError | None = None
+
+    # Try the libsndfile-backed path first; it handles the widest range of
+    # common PCM variants (including 24-bit) without extra work.
+    try:
+        return _load_with_soundfile(file_path)
+    except InvalidAudioError as exc:
+        first_error = exc
+    except Exception as exc:  # pragma: no cover - defensive guard
+        first_error = InvalidAudioError(f"Unexpected error via soundfile: {exc}")
+
     try:
         # --- Fast path: standard WAV via wave ---
         try:
@@ -80,27 +126,14 @@ def load_audio_mono_16k(file_path: str) -> np.ndarray:
                 except ValueError as exc:
                     raise InvalidAudioError(f"Corrupt WAV channel data: {exc}") from exc
 
-            # Naive resample to 16 kHz if the source rate is different.
-            if sample_rate != 16000 and sample_rate > 0 and audio.size > 0:
-                import math
-
-                target_len = int(math.ceil(len(audio) * 16000.0 / float(sample_rate)))
-                if target_len <= 0:
-                    raise InvalidAudioError("Resampling produced no samples.")
-
-                x_old = np.linspace(
-                    0.0, 1.0, num=len(audio), endpoint=False, dtype=np.float32
-                )
-                x_new = np.linspace(
-                    0.0, 1.0, num=target_len, endpoint=False, dtype=np.float32
-                )
-                audio = np.interp(x_new, x_old, audio).astype(np.float32)
-
-            # Ensure final dtype is float32.
+            audio = _resample_to_16k(audio, sample_rate)
             return audio.astype(np.float32)
 
+        except InvalidAudioError:
+            # Try a more tolerant decoder before giving up.
+            return _load_with_soundfile(file_path)
         except (wave.Error, OSError):
-            # Not a simple WAV, fall through to PyAV.
+            # Not a simple WAV, fall through to more general decoders.
             pass
 
         # --- Fallback: PyAV for general formats ---
@@ -151,7 +184,11 @@ def load_audio_mono_16k(file_path: str) -> np.ndarray:
             raise InvalidAudioError(f"Failed to decode audio via PyAV: {exc}") from exc
 
     except InvalidAudioError:
-        # Pass through domain-specific errors unchanged.
+        # If libsndfile already reported an error, prefer that context so
+        # callers see the root cause for failures surfaced before falling
+        # back through multiple decoders.
+        if first_error is not None:
+            raise InvalidAudioError(str(first_error))
         raise
     except Exception as exc:
         # Normalize unexpected exceptions into InvalidAudioError for callers.

@@ -1,6 +1,11 @@
 import io, os, tempfile, time, json
 import multiprocessing as mp
-from datetime import datetime, timedelta, UTC
+try:
+    from datetime import datetime, timedelta, UTC
+except ImportError:  # Python < 3.11
+    from datetime import datetime, timedelta, timezone
+
+    UTC = timezone.utc
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Response
 from fastapi.responses import JSONResponse
@@ -368,6 +373,8 @@ def get_result(job_id: str):
             language=raw.get("language", "unknown"),
             probability=raw.get("probability", 0.0), # Note: worker doesn't set this field
             detection_method=raw.get("detection_method"),
+            gate_decision=raw.get("gate_decision"),
+            gate_meta=raw.get("gate_meta"),
             transcript_snippet=transcript_snippet,
             processing_ms=raw.get("processing_ms", 0),
             original_filename=job.original_filename,

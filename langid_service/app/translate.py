@@ -1,4 +1,11 @@
-from transformers import MarianMTModel, MarianTokenizer
+from typing import Any
+
+try:
+    from transformers import MarianMTModel, MarianTokenizer  # type: ignore
+except ImportError:  # pragma: no cover - optional in lightweight environments
+    MarianMTModel = None  # type: ignore
+    MarianTokenizer = None  # type: ignore
+
 from loguru import logger
 from .config import ALLOWED_LANGS
 
@@ -6,6 +13,10 @@ _models = {}
 _tokenizers = {}
 
 def _load_model(model_name):
+    if MarianMTModel is None or MarianTokenizer is None:
+        raise ImportError(
+            "transformers is not installed. Install translation dependencies to use translation features."
+        )
     if model_name not in _models:
         logger.info(f"Loading translation model: {model_name}")
         _models[model_name] = MarianMTModel.from_pretrained(model_name)

@@ -1,5 +1,10 @@
 import enum
-from datetime import datetime, UTC
+try:
+    from datetime import datetime, UTC
+except ImportError:  # Python < 3.11
+    from datetime import datetime, timezone
+
+    UTC = timezone.utc
 from sqlalchemy import Column, String, DateTime, Text, Integer, Enum
 from sqlalchemy.orm import Mapped, mapped_column
 from ..database import Base

@@ -1,7 +1,12 @@
 # langid_service/app/worker/runner.py
 import os
 import json
-from datetime import datetime, UTC
+try:
+    from datetime import datetime, UTC
+except ImportError:  # Python < 3.11
+    from datetime import datetime, timezone
+
+    UTC = timezone.utc
 from typing import Optional
 from sqlalchemy.orm import Session
 from loguru import logger
@@ -35,18 +40,42 @@ def process_one(session: Session, job: Job) -> None:
         lang_info = detect_lang_en_fr_only(audio)
         lang = lang_info["language"]
         detection_method = lang_info.get("method", "autodetect")
+        gate_decision = lang_info.get("gate_decision")
+        gate_meta = lang_info.get("gate_meta") or {}
 
         # Extract language probability from gate output (fallback to 0.0 if missing)
-        raw_prob = lang_info.get("language_probability")
+        raw_prob = lang_info.get("probability")
         if raw_prob is None:
-            raw_prob = lang_info.get("probability")
+            raw_prob = lang_info.get("language_probability")
         try:
             prob = float(raw_prob) if raw_prob is not None else 0.0
         except (TypeError, ValueError):
             prob = 0.0
 
-        # Decide whether to use VAD based on configured minimum probability
-        use_vad = prob < LANG_DETECT_MIN_PROB
+        # Decide whether to use VAD based on gate hint, falling back to probability threshold
+        use_vad = lang_info.get("use_vad")
+        if use_vad is None:
+            use_vad = prob < LANG_DETECT_MIN_PROB
+
+        gate_meta = dict(gate_meta) if isinstance(gate_meta, dict) else {}
+        if not gate_meta:
+            gate_meta = {
+                "mid_zone": False,
+                "language": lang,
+                "probability": prob,
+                "stopword_ratio_en": 0.0,
+                "stopword_ratio_fr": 0.0,
+                "token_count": 0,
+            }
+        else:
+            gate_meta.setdefault("mid_zone", False)
+            gate_meta.setdefault("language", lang)
+            gate_meta.setdefault("probability", prob)
+            gate_meta.setdefault("stopword_ratio_en", 0.0)
+            gate_meta.setdefault("stopword_ratio_fr", 0.0)
+            gate_meta.setdefault("token_count", 0)
+
+        gate_meta["vad_used"] = bool(use_vad)
 
         # Transcribe only the first SNIPPET_MAX_SECONDS of audio for the snippet
         snippet_samples = int(SNIPPET_MAX_SECONDS * 16000)  # 16 kHz mono
@@ -87,6 +116,8 @@ def process_one(session: Session, job: Job) -> None:
             "probability": prob,
             "text": snippet,
             "detection_method": detection_method,
+            "gate_decision": gate_decision,
+            "gate_meta": gate_meta,
             "raw": {
                 "text": snippet,
                 "info": raw_info,
