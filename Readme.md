@@ -190,6 +190,44 @@ VAD is a technique used to identify and segment speech in an audio stream. While
 | `medium`   | ~5        | ~2x               |
 | `large-v3` | ~8        | 1x                |
 
+### Gate Flow (EN / FR)
+
+The service implements a conservative EN/FR gate to ensure downstream processing only proceeds on audio that is likely English or French. The gate uses a multi-step flow:
+
+- 1) **Autodetect probe (no VAD):** run Whisper autodetect on a short probe (first ~30s).
+- 2) **High confidence accept:** if autodetect probability >= `LANG_MID_UPPER`, accept immediately.
+- 3) **Mid-zone heuristics:** if probability is in `[LANG_MID_LOWER, LANG_MID_UPPER)`, and the detected language is `en` or `fr`, apply a cheap stopword-ratio heuristic on the probe transcript to decide whether to accept without running VAD. Thresholds are configurable (see `.env` variables below).
+- 4) **VAD retry:** if the probe fails the above checks, retry autodetection on a VAD-trimmed probe (helps when silence/noise biases detection).
+- 5) **Fallback / scoring:** if VAD retry still doesn't produce a confident EN/FR result and `ENFR_STRICT_REJECT` is `false`, run a low-cost scoring pass comparing English vs French on the probe and pick the better-scoring language.
+- 6) **Strict reject:** if `ENFR_STRICT_REJECT=true` and no confident EN/FR decision was made, the request is rejected with HTTP 400.
+
+Mermaid flow (simplified):
+
+```mermaid
+flowchart LR
+    A[Probe: Whisper autodetect (vad_filter=false)] -->|p >= LANG_MID_UPPER AND lang in {en,fr}| ACCEPT_HIGH[Accept: autodetect]
+    A -->|LANG_MID_LOWER <= p < LANG_MID_UPPER| MID[Mid-zone heuristics (stopword ratios)]
+    MID -->|heuristic passes| ACCEPT_MID[Accept: mid-zone]
+    MID -->|heuristic fails| VAD[VAD retry: Whisper autodetect (vad_filter=true)]
+    A -->|p < LANG_MID_LOWER OR lang not en/fr| VAD
+    VAD -->|confident EN/FR| ACCEPT_VAD[Accept: autodetect-vad]
+    VAD -->|still not confident| FALLBACK[Fallback scoring (en vs fr)]
+    FALLBACK -->|choose en/fr| ACCEPT_FALLBACK[Accept: fallback]
+    VAD -->|reject AND ENFR_STRICT_REJECT=true| REJECT[Reject HTTP 400]
+```
+
+Key environment variables (already in `.env.example`):
+
+- `LANG_MID_LOWER` — lower bound for the mid confidence range (default 0.60)
+- `LANG_MID_UPPER` — upper bound for the mid confidence range (default 0.79)
+- `LANG_MIN_STOPWORD_EN` / `LANG_MIN_STOPWORD_FR` — minimum stopword ratio required to accept mid-zone as EN/FR (default 0.15)
+- `LANG_STOPWORD_MARGIN` — minimum margin difference between stopword ratios to prefer one language (default 0.05)
+- `LANG_MIN_TOKENS` — minimum token count in the probe transcript before heuristics apply (default 10)
+- `LANG_DETECT_MIN_PROB` — probability threshold used to accept VAD-assisted autodetect (default 0.6)
+- `ENFR_STRICT_REJECT` — when `true` the service will `HTTP 400` if a confident EN/FR decision cannot be made.
+
+The API result JSON for a completed job now includes `gate_decision`, `gate_meta`, and `use_vad` fields so callers can inspect how the gate made its decision and what configuration influenced it.
+
 ## 7. API Reference
 
 **Endpoints:**

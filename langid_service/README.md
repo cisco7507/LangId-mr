@@ -148,16 +148,50 @@ Responsible for:
 
 ## **EN/FR Gate (`lang_gate.py`)**
 
-Core logic:
+Core logic and gate flow:
 
-1. Whisper autodetects language + probability  
-2. Reject if:
-   - not EN/FR  
-   - below probability threshold (`LANG_DETECT_MIN_PROB`)
-3. Retry with VAD-processed audio  
-4. If still not EN/FR:
-   - run fallback scoring (EN vs FR)
-5. Return final EN/FR decision
+1. **Autodetect probe (no VAD)** — a short probe (first ~30s) is sent to the model with `vad_filter=False` and cheap decoding settings. The model returns an autodetected language and a probability.
+
+2. **High-confidence accept** — if the autodetect probability >= `LANG_MID_UPPER` and the detected language is `en` or `fr`, the gate accepts immediately and processing continues.
+
+3. **Mid-zone heuristics** — if the autodetect probability falls in the mid-range `[LANG_MID_LOWER, LANG_MID_UPPER)`, and the detected language is `en` or `fr`, the gate applies a lightweight stopword-ratio heuristic on the probe transcript (counts of common English vs French stopwords). If the heuristic indicates the predicted language dominates (and the token count is above `LANG_MIN_TOKENS`), the gate accepts without running VAD.
+
+4. **VAD retry** — if the probe is below the mid-zone thresholds or the mid-zone heuristic fails, the gate retries autodetection using a VAD-trimmed probe (`vad_filter=True`) which can improve detection when silence/noise is present.
+
+5. **Fallback scoring** — if VAD retry still doesn't produce a confident EN/FR result and `ENFR_STRICT_REJECT` is `false`, the system runs a cheap scoring pass that transcribes the probe as `en` and `fr` with low-cost settings and picks the language with the better average log-probability.
+
+6. **Strict reject** — if `ENFR_STRICT_REJECT=true` and no confident EN/FR decision is available after the above steps, the service returns HTTP 400 and rejects the clip.
+
+Mermaid flow (compact):
+
+```mermaid
+flowchart LR
+  Probe[Autodetect probe (no VAD)] -->|p >= LANG_MID_UPPER| AcceptHigh[Accept (autodetect)]
+  Probe -->|LANG_MID_LOWER <= p < LANG_MID_UPPER| MidZone[Mid-zone heuristics (stopword ratios)]
+  MidZone -->|heuristic ok| AcceptMid[Accept (mid-zone)]
+  MidZone -->|heuristic fails| VADRetry[VAD retry]
+  Probe -->|p < LANG_MID_LOWER OR non-EN/FR| VADRetry
+  VADRetry -->|confident| AcceptVAD[Accept (autodetect-vad)]
+  VADRetry -->|still low| Fallback[Fallback scoring (en vs fr)]
+  Fallback -->|chosen| AcceptFallback[Accept (fallback)]
+  VADRetry -->|reject AND ENFR_STRICT_REJECT=true| Reject[Reject (400)]
+```
+
+Runtime metadata: the gate returns a structured `gate_meta` object (and top-level `gate_decision` / `use_vad`) that includes:
+
+- `mid_zone`: whether the probe probability fell into the mid-range
+- `language`: chosen language (`en` or `fr`)
+- `probability`: the raw probability from autodetect (or `null` for fallback)
+- `stopword_ratio_en` / `stopword_ratio_fr`: heuristics used for mid-zone decisions
+- `token_count`: number of tokens in the probe transcript used for heuristics
+- `vad_used`: whether the VAD retry was used
+- `config`: echo of the key gate configuration values (the `LANG_*` env vars used at runtime)
+
+Note: the mid-zone and stopword heuristics are intentionally conservative — their purpose is to avoid unnecessary VAD/transcription work when the probe already shows clear language-signals, while still allowing a robust fallback path when uncertain.
+
+Audio loader robustness
+
+Parallel to the gate logic, the service now prefers `libsndfile` (via the Python `soundfile` binding) for decoding uploaded audio. This improves support for PCM variants such as 24-bit WAV files that previously caused worker crashes (`Unsupported sample width: 3`). When `soundfile` is not available the loader falls back to the stdlib `wave` reader (with explicit 24-bit handling) and then to `PyAV` as a last resort. This ordering reduces decoding failures and surfaces the original decoder error when all fallbacks fail.
 
 ---
 
