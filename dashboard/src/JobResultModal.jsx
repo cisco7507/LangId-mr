@@ -24,6 +24,7 @@ export default function JobResultModal({ jobResult, onClose }) {
   const [loading, setLoading] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
   const [showPipelineDocs, setShowPipelineDocs] = useState(false);
+  const [audioError, setAudioError] = useState(null);
 
   const derived = useMemo(() => {
     if (!result) return null;
@@ -172,14 +173,31 @@ export default function JobResultModal({ jobResult, onClose }) {
                       Audio
                     </p>
                     <div className="mt-2">
-                      {result?.job_id ? (
-                        <audio
-                          controls
-                          className="w-full"
-                          src={`${API_BASE}/jobs/${result.job_id}/audio`}
-                        >
-                          Your browser does not support the audio element.
-                        </audio>
+                      {result ? (
+                        <>
+                          <audio
+                            key={result.job_id}
+                            controls
+                            className="w-full"
+                            src={`${API_BASE}/jobs/${result.job_id}/audio`}
+                            onError={() => setAudioError("Failed to load audio")}
+                          >
+                            Your browser does not support the audio element.
+                          </audio>
+                          <div className="mt-2 flex items-center justify-between gap-3">
+                            <a
+                              className="text-xs text-sky-600 underline"
+                              href={`${API_BASE}/jobs/${result.job_id}/audio`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              Open / download audio
+                            </a>
+                            {audioError && (
+                              <span className="text-xs text-rose-600">{audioError}</span>
+                            )}
+                          </div>
+                        </>
                       ) : (
                         <span className="text-xs text-slate-500">No audio available</span>
                       )}
