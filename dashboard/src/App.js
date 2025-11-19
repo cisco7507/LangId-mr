@@ -252,7 +252,7 @@ function App() {
               </button>
             </div>
           </div>
-          <div className="max-h-[420px] overflow-y-auto">
+          <div>
             <table className="min-w-full text-left text-sm">
               <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-600">
                 <tr>
@@ -350,7 +350,7 @@ function App() {
                         {job.updated_at}
                       </td>
                       <td className="px-4 py-3 text-xs text-rose-300">
-                        <div className="max-h-12 overflow-y-auto whitespace-normal break-words">
+                        <div className="whitespace-normal break-words">
                           {job.error}
                         </div>
                       </td>
