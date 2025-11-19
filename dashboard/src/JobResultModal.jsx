@@ -165,6 +165,18 @@ export default function JobResultModal({ jobResult, onClose }) {
                     >
                       {derived.originalFilename || "—"}
                     </p>
+                    {result?.job_id && (
+                      <div className="mt-2">
+                        <a
+                          className="text-xs text-sky-600 underline"
+                          href={`${API_BASE}/jobs/${result.job_id}/audio`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          Open / download audio
+                        </a>
+                      </div>
+                    )}
                   </div>
 
                   {/* Audio player */}
