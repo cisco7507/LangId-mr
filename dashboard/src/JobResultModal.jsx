@@ -190,6 +190,7 @@ export default function JobResultModal({ jobResult, onClose }) {
                           <audio
                             key={result.job_id}
                             controls
+                            preload="metadata"
                             className="w-full"
                             src={`${API_BASE}/jobs/${result.job_id}/audio`}
                             onError={() => setAudioError("Failed to load audio")}

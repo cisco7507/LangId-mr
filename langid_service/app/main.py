@@ -410,6 +410,8 @@ def get_job_audio(job_id: str):
         if not mime_type:
             mime_type = "audio/wav"
 
-        return FileResponse(path=str(audio_path), media_type=mime_type, filename=audio_path.name)
+        # Return as inline content so browsers can stream in an <audio> element
+        headers = {"Content-Disposition": f'inline; filename="{audio_path.name}"'}
+        return FileResponse(path=str(audio_path), media_type=mime_type, headers=headers)
     finally:
         session.close()
