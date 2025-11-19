@@ -166,6 +166,26 @@ export default function JobResultModal({ jobResult, onClose }) {
                     </p>
                   </div>
 
+                  {/* Audio player */}
+                  <div className="rounded-lg border border-slate-200 bg-white p-3 md:col-span-5">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">
+                      Audio
+                    </p>
+                    <div className="mt-2">
+                      {result?.job_id ? (
+                        <audio
+                          controls
+                          className="w-full"
+                          src={`${API_BASE}/jobs/${result.job_id}/audio`}
+                        >
+                          Your browser does not support the audio element.
+                        </audio>
+                      ) : (
+                        <span className="text-xs text-slate-500">No audio available</span>
+                      )}
+                    </div>
+                  </div>
+
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                     <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">
                       Probability

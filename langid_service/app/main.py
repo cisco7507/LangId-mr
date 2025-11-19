@@ -8,7 +8,8 @@ except ImportError:  # Python < 3.11
     UTC = timezone.utc
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+import mimetypes
 from pydantic import ValidationError
 from loguru import logger
 from sqlalchemy.orm import Session
@@ -381,5 +382,34 @@ def get_result(job_id: str):
             original_filename=job.original_filename,
             raw=raw,
         )
+    finally:
+        session.close()
+
+
+@app.get("/jobs/{job_id}/audio")
+def get_job_audio(job_id: str):
+    """Serve the original uploaded audio file for a job.
+
+    This returns a `FileResponse` with an appropriate audio content-type.
+    The dashboard uses this endpoint to embed an audio player.
+    """
+    session = SessionLocal()
+    try:
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if not job.input_path:
+            raise HTTPException(status_code=404, detail="No input audio available for this job")
+
+        audio_path = Path(job.input_path)
+        if not audio_path.exists():
+            raise HTTPException(status_code=404, detail="Audio file not found on server")
+
+        mime_type, _ = mimetypes.guess_type(str(audio_path))
+        # Default to wav if unknown to make browsers happy
+        if not mime_type:
+            mime_type = "audio/wav"
+
+        return FileResponse(path=str(audio_path), media_type=mime_type, filename=audio_path.name)
     finally:
         session.close()
