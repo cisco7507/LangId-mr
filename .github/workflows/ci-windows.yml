@@ -33,6 +33,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Ensure .env exists for tests
+        working-directory: ./langid_service
+        shell: pwsh
+        run: |
+          Write-Host "Ensuring .env exists by copying .env.example if needed"
+          if (-not (Test-Path -Path .env)) {
+            Copy-Item -Path .env.example -Destination .env
+            Write-Host ".env created from .env.example"
+          } else {
+            Write-Host ".env already present; leaving as-is"
+          }
+
       - name: Run backend tests
         working-directory: ./langid_service
         run: |
