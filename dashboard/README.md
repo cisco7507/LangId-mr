@@ -142,6 +142,8 @@ On Windows Server, the typical flow is:
 
 No changes to the install script are required for the new UI; just ensure `public\config.js` has the correct API URL **before** running `npm run build`.
 
+For a focused guide to the Windows installer and common troubleshooting, see `dashboard/launch-script/README.md` which documents the installer flags, auto-build behavior, log-dir fallbacks, and verification steps.
+
 ---
 
 ## 7. Troubleshooting

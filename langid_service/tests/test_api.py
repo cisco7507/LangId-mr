@@ -7,10 +7,11 @@ from langid_service.app.database import SessionLocal
 
 TEST_DATA_DIR = Path(__file__).parent / "data" / "golden"
 
+@patch("langid_service.app.worker.runner.get_model")
 @patch("langid_service.app.worker.runner.detect_lang_en_fr_only")
 @patch("langid_service.app.worker.runner.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
 @patch("langid_service.app.main.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
-def test_submit_and_detect_sync(mock_main_load_audio, mock_runner_load_audio, mock_detect_lang, client):
+def test_submit_and_detect_sync(mock_main_load_audio, mock_runner_load_audio, mock_detect_lang, mock_get_model, client):
     """
     Tests job submission and synchronous processing.
     """
@@ -20,7 +21,25 @@ def test_submit_and_detect_sync(mock_main_load_audio, mock_runner_load_audio, mo
         "language": "en",
         "probability": 0.9,
         "method": "direct",
+        "gate_decision": "accepted_high_conf",
+        "music_only": False,
+        "gate_meta": {
+            "mid_zone": False,
+            "token_count": 42,
+            "stopword_ratio_en": 0.4,
+            "stopword_ratio_fr": 0.1,
+            "music_only": False,
+        },
     }
+
+    # Provide a stub Whisper model for snippet transcription.
+    from types import SimpleNamespace
+
+    stub_model = MagicMock()
+    stub_segment = SimpleNamespace(text="hello world this is a test clip")
+    stub_info = SimpleNamespace(language="en", language_probability=0.9)
+    stub_model.transcribe.return_value = ([stub_segment], stub_info)
+    mock_get_model.return_value = stub_model
 
     with open(TEST_DATA_DIR / "en_1.wav", "rb") as f:
         data = {"file": ("clip_en.wav", f, "audio/wav")}
@@ -49,6 +68,12 @@ def test_submit_and_detect_sync(mock_main_load_audio, mock_runner_load_audio, mo
     js = res.json()
     assert "language" in js
     assert "probability" in js
+    assert js.get("gate_decision") == "accepted_high_conf"
+    assert js.get("music_only") is False
+    assert isinstance(js.get("gate_meta"), dict)
+    assert js["gate_meta"].get("vad_used") is False
+    assert js["gate_meta"].get("mid_zone") is False
+    assert js["gate_meta"].get("music_only") is False
 
 @patch("langid_service.app.main.load_audio_mono_16k", return_value=np.zeros(16000, dtype=np.float32))
 def test_get_result_for_incomplete_job(mock_load_audio, client):

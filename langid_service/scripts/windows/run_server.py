@@ -15,5 +15,5 @@ if __name__ == "__main__":
         log_level="info",
         reload=True,
         # You can also tune workers here if you prefer uvicorn's workers
-        # but you already have internal worker threads for jobs.
+        # but you already have internal worker processes for jobs.
     )

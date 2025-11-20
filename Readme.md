@@ -11,224 +11,302 @@ The LangID Service is a high-performance, multithreaded microservice designed fo
 **Internal Modules:**
 *   `app\main.py`: The FastAPI application entry point, defining API endpoints and the worker lifecycle.
 *   `app\services\detector.py`: The core logic for interacting with the `faster-whisper` model.
-*   `app\worker\runner.py`: The background worker implementation that processes jobs from the queue.
-*   `app\models\models.py`: The SQLAlchemy data models for the `jobs` table.
+*** Begin Unified README ***
 
-**Platform Support:**
-While the service can run on macOS and Linux, this guide is optimized for **Windows Server**, using PowerShell and NSSM (Non-Sucking Service Manager) for robust, persistent deployments.
+# LangID Service — Unified README
 
-**Backend:**
-The service uses a database-backed job queue, defaulting to **SQLite** for simplicity. The SQLAlchemy ORM allows for easy swapping to a more robust database like **PostgreSQL** with minimal configuration changes.
+## A. Overview
 
-## 2. Architecture Diagram
+The LangID Service is a backend microservice that performs English vs French language detection and optional transcription for audio files. The service accepts audio via file upload or URL, runs a short probe autodetection pass using Whisper, applies a conservative EN/FR gate (including a music-only detector), optionally retries detection with a VAD-trimmed probe, and produces a structured JSON result persisted with the job record.
 
-The service operates on a simple, robust architecture designed for concurrency and reliability:
+Supported languages: English (`en`) and French (`fr`) only. Non-EN/FR audio is either coerced via a fallback scorer or rejected when strict mode is enabled.
+
+System boundaries:
+- Audio ingestion: HTTP API uploads or URL fetch.
+- Language detection: Whisper autodetect probe (first pass without VAD).
+- Gate logic: high-confidence accept, mid-zone heuristics, VAD retry, fallback scoring, music-only short-circuit.
+- Transcription: performed only when the gate accepts speech.
+- Results: structured `result_json` persisted in DB and returned by API.
+
+## B. Architecture
+
+High-level components:
+- API server: FastAPI application, job endpoints, health and metrics.
+- Worker subsystem: background processes that perform detection and transcription.
+- Whisper inference: `faster-whisper` used for autodetect and transcription.
+- EN/FR language gate: encapsulates all language decision logic.
+- Storage: local `STORAGE_DIR` for audio and artifacts.
+- Database: SQLite default; used for job queue and persistence.
+
+Mermaid architecture diagram:
 
 ```mermaid
-graph TD
-    subgraph "Client"
-        A["HTTP Client"]
-    end
-
-    subgraph "FastAPI Service"
-        B["REST API Endpoints"]
-        C["Job Queue (SQLite)"]
-    end
-
-    subgraph "Background Workers"
-        D1["Worker Thread 1"]
-        D2["Worker Thread 2"]
-        D3["..."]
-        E["Faster-Whisper Model"]
-    end
-
-    subgraph "Storage"
-        F["SQLite Database"]
-        G["Audio File Storage"]
-    end
-
-    A -- "Upload/URL" --> B
-    B -- "Enqueues Job" --> C
-    C -- "Stores Job" --> F
-    B -- "Stores File" --> G
-
-    D1 -- "Polls for Jobs" --> C
-    D2 -- "Polls for Jobs" --> C
-    D3 -- "Polls for Jobs" --> C
-
-    D1 -- "Loads Model" --> E
-    D2 -- "Loads Model" --> E
-    D3 -- "Loads Model" --> E
-
-    D1 -- "Processes Job" --> F & G
-    D2 -- "Processes Job" --> F & G
-    D3 -- "Processes Job" --> F & G
-
-    A -- "Check Status/Result" --> B
-    B -- "Reads Status/Result" --> F
+flowchart TD
+  Client[Client] --> API[API Server]
+  API --> DB[SQLite Job DB]
+  API --> Storage[Audio Storage]
+  WorkerPool[Worker Subsystem] --> DB
+  WorkerPool --> Storage
+  WorkerPool --> Model[Whisper Model]
+  Model --> Gate[ENFR Gate]
+  Gate --> WorkerPool
+  API --> Dashboard[Dashboard]
 ```
 
-## 3. Environment & Configuration
+## C. Full EN/FR Gate Pipeline
 
-The service is configured via environment variables. Create a `.env` file in the project root (e.g., `C:\langid_service\.env`) or set these variables in the NSSM service configuration.
+This section documents the gate behavior and configuration.
 
-**Sample `.env` file:**
-```
-# C:\langid_service\.env
+Autodetect probe
+- The probe is a short audio window decoded and passed to Whisper with `vad_filter=False` for the initial detection.
+- Whisper returns a transcript and a predicted language with probability.
 
-# Whisper model size ('tiny', 'base', 'small', 'medium', 'large-v3')
-WHISPER_MODEL_SIZE=base
+Music-only detection (executed before acceptance checks)
+- Normalization: lowercase, remove matching outer brackets ([], (), {}), trim whitespace.
+- Replace musical Unicode markers (♪ ♫ ♩ ♬ ♭ ♯) with token `music`.
+- Tokenize and remove filler tokens (examples: `intro`, `outro`, `playing`, `background`, `soft`, `de`, `fond`, `only`, `song`, `theme`, `jingle`, `play`).
+- If remaining tokens contain only `music` or `musique` plus allowed fillers, short-circuit to `NO_SPEECH_MUSIC_ONLY` with `language = "none"`, `music_only = true`.
 
-# Device to run the model on ('cpu', 'cuda')
-WHISPER_DEVICE=cpu
+High-confidence accept
+- If autodetect probability >= `LANG_MID_UPPER` and predicted language is `en` or `fr`, accept immediately without VAD.
 
-# Compute precision ('int8', 'float16', 'float32')
-WHISPER_COMPUTE=int8
+Mid-zone logic
+- If `LANG_MID_LOWER <= probability < LANG_MID_UPPER` and predicted language is `en` or `fr`, compute stopword ratios for EN and FR.
+- Heuristic: require `token_count >= LANG_MIN_TOKENS` and `dominant_ratio - other_ratio >= LANG_STOPWORD_MARGIN` and `dominant_ratio >= LANG_MIN_STOPWORD_{EN|FR}` to accept mid-zone.
 
-# Maximum allowed upload size in MB (default: 100)
-MAX_FILE_SIZE_MB=100
+VAD retry
+- If the mid-zone heuristic fails, or initial autodetect is below `LANG_MID_LOWER`, re-run detection using VAD-trimmed probe (`vad_filter=True`).
+- If VAD retry yields a confident EN/FR per `LANG_DETECT_MIN_PROB`, accept.
 
-# Number of concurrent background workers
-MAX_WORKERS=4
+Fallback scoring
+- If VAD retry is insufficient and `ENFR_STRICT_REJECT` is false, perform low-cost scoring/transcription for EN and FR and pick the better-scoring language (`method = fallback`). The fallback may not provide a calibrated probability.
 
-# Logging verbosity ('debug', 'info', 'warning', 'error')
-LOG_LEVEL=info
+Strict reject
+- If `ENFR_STRICT_REJECT` is true and no path produced a confident EN/FR decision, return HTTP 400 / Reject.
 
-# Path to the SQLite database file
-DB_PATH=C:\langid_service\langid.sqlite
+Mermaid decision-tree diagram:
 
-# Directory to store uploaded audio files
-STORAGE_DIR=C:\langid_service\storage
-```
-
-## 4. Installation and Setup on Windows Server
-
-**Prerequisites:**
-*   Python 3.10+ (64-bit) installed and on the system `PATH`.
-*   `git` for Windows.
-
-**Step-by-Step Instructions:**
-1.  **Clone & Setup Virtual Environment (as Administrator):**
-    ```powershell
-    git clone https://github.com/<org>/langid_service.git C:\langid_service
-    cd C:\langid_service
-    python -m venv .venv
-    .venv\Scripts\activate
-    pip install -r requirements.txt
-    ```
-2.  **Run Locally for Testing:**
-    ```powershell
-    python -m uvicorn app.main:app --host 0.0.0.0 --port 8080
-    ```
-3.  **Install as a Persistent Windows Service (NSSM):**
-    The provided PowerShell script automates the NSSM setup.
-    ```powershell
-    .\scripts\windows\nssm_install.ps1 -ServiceName LangIdAPI -AppDir C:\langid_service
-    nssm start LangIdAPI
-    ```
-    To check the status of the service, use `nssm status LangIdAPI`.
-
-**Model Cache Warm-up:**
-The first time the service runs, it will download the specified `faster-whisper` model to the user profile's cache directory (e.g., `C:\Users\YourUser\.cache\ctranslate2\`). It is recommended to run the service once interactively to pre-warm the cache before deploying it as a persistent service.
-
-## 5. Database Management
-
-**Schema:**
-The default SQLite database uses a single `jobs` table:
-```sql
-CREATE TABLE jobs (
-    id TEXT PRIMARY KEY,
-    input_path TEXT NOT NULL,
-    status TEXT NOT NULL,
-    progress INTEGER DEFAULT 0,
-    result_json TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+```mermaid
+flowchart TD
+  Probe[Probe transcript] --> MusicCheck[Music-only check]
+  MusicCheck -->|yes| MusicFlag[NO_SPEECH_MUSIC_ONLY - music_only=true]
+  MusicCheck -->|no| Detect[Autodetect probe]
+  Detect -->|p >= LANG_MID_UPPER| AcceptHigh[ACCEPT_AUTODETECT]
+  Detect -->|LANG_MID_LOWER <= p < LANG_MID_UPPER| MidZone[Mid-zone heuristics]
+  MidZone -->|heuristic pass| AcceptMid[ACCEPT_MID_ZONE]
+  MidZone -->|heuristic fail| VADRetry[VAD retry]
+  Detect -->|p < LANG_MID_LOWER OR lang not en/fr| VADRetry
+  VADRetry -->|confident| AcceptVAD[ACCEPT_AUTODETECT_VAD]
+  VADRetry -->|not confident| Fallback[Fallback scoring]
+  Fallback --> AcceptFallback[ACCEPT_FALLBACK]
+  VADRetry -->|reject and strict| Reject[REJECT HTTP 400]
 ```
 
-**Inspect Jobs:**
-If you have the `sqlite3` command-line tool, you can query the database directly:
-```powershell
-sqlite3.exe C:\langid_service\langid.sqlite "SELECT id, status, updated_at FROM jobs ORDER BY updated_at DESC LIMIT 5;"
+Gate outputs in `result_json`:
+- `gate_decision` (enum), `gate_meta` (detailed metadata), `music_only` (bool), `use_vad` (bool).
+
+## D. Whisper Model + GPU Details
+
+Supported models: `tiny`, `base`, `small`, `medium`, `large-v3`.
+
+Device selection via `WHISPER_DEVICE`: `cpu`, `cuda`, or `auto`.
+`WHISPER_COMPUTE` controls precision: `int8`, `float16`, `float32`.
+
+Notes for Windows:
+- GPU support on Windows depends on drivers and the runtime (CTranslate2/ctranslate2 bindings). CPU-only operation is the most portable option on Windows Server.
+- Very old GPUs (Pascal or earlier) may lack the required compute capability for optimized kernels.
+
+Recommended configurations:
+
+| Use Case | Model | Device | Compute |
+|---|---:|---:|---:|
+| Low-latency Linux GPU | `small`/`base` | `cuda` | `float16`/`int8` |
+| CPU-only Linux/Windows | `base` | `cpu` | `int8` |
+| Highest accuracy | `large-v3` | `cuda` | `float16` |
+
+If GPU is unsupported, set `WHISPER_DEVICE=cpu` and use `WHISPER_COMPUTE=int8` where CPU quantization is supported.
+
+## E. Worker System
+
+Worker behavior:
+- Each worker process polls the DB for queued jobs, claims a job, sets `status=processing`, and runs detection/transcription.
+- Concurrency settings: `MAX_WORKERS` controls process count; `MAX_CONCURRENT_JOBS` controls per-worker parallelism.
+
+Job claim/update notes:
+- Use transactional DB updates to claim and update jobs. Prefer SQLite WAL mode for better concurrency.
+- Persist `result_json` atomically to avoid partial writes.
+
+Mermaid worker flow:
+
+```mermaid
+flowchart LR
+  API[API Server] --> DB[SQLite DB]
+  Worker[Worker Process] --> DB
+  Worker --> Model[Whisper Model]
+  Worker --> Storage[Audio Storage]
+  Worker --> DBResult[Persist result_json]
+  DBResult --> API
 ```
 
-**Automated Purging with Windows Task Scheduler:**
-A script is provided to purge old jobs. It's recommended to automate this with Task Scheduler.
+## F. Configuration (.env)
 
-1.  **Create a PowerShell script wrapper** (e.g., `C:\langid_service\scripts\run_purge.ps1`):
-    ```powershell
-    C:\langid_service\.venv\Scripts\python.exe C:\langid_service\app\maintenance\purge_db.py --keep-days 7 --purge-files
-    ```
-2.  **Create a new Basic Task** in Windows Task Scheduler.
-3.  Set the **Trigger** to run daily (e.g., at 2:00 AM).
-4.  Set the **Action** to "Start a program" and use the following settings:
-    *   **Program/script:** `powershell.exe`
-    *   **Add arguments (optional):** `-File "C:\langid_service\scripts\run_purge.ps1"`
+Important environment variables and recommended defaults:
 
-## 6. Language Detection Path
+| Variable | Default | Description |
+|---|---|---|
+| `LOG_DIR` | `./logs` | Log output directory |
+| `STORAGE_DIR` | `./storage` | Audio storage directory |
+| `DB_URL` | `sqlite:///./langid.sqlite` | SQLAlchemy DB URL |
+| `MAX_WORKERS` | `2` | Number of worker processes |
+| `MAX_CONCURRENT_JOBS` | `1` | Jobs per worker process |
+| `MAX_RETRIES` | `3` | Max retries per job |
+| `WHISPER_MODEL_SIZE` | `base` | Model size |
+| `WHISPER_DEVICE` | `auto` | `cpu` / `cuda` / `auto` |
+| `WHISPER_COMPUTE` | `int8` | Compute precision |
+| `LANG_MID_LOWER` | `0.60` | Mid-range lower bound |
+| `LANG_MID_UPPER` | `0.79` | Mid-range upper bound |
+| `LANG_MIN_STOPWORD_EN` | `0.15` | Min stopword ratio for EN in mid-zone |
+| `LANG_MIN_STOPWORD_FR` | `0.15` | Min stopword ratio for FR in mid-zone |
+| `LANG_STOPWORD_MARGIN` | `0.05` | Required margin between ratios |
+| `LANG_MIN_TOKENS` | `10` | Min tokens for heuristics |
+| `LANG_DETECT_MIN_PROB` | `0.60` | Min prob to accept VAD autodetect |
+| `ENFR_STRICT_REJECT` | `false` | If true, reject non-EN/FR audio |
+| `APP_HOST` | `0.0.0.0` | API host |
+| `APP_PORT` | `8080` | API port |
 
-The core language detection logic resides in `app\services\detector.py`. The service uses a deterministic, no-VAD (Voice Activity Detection) path for language detection. This is a critical design choice to ensure that the language detection is consistent and not affected by the presence or absence of speech in the audio.
+Adjust these values in production according to CPU/GPU capacity and expected job volume.
 
-**Why No-VAD for Language Detection?**
+## G. API Reference
 
-VAD is a technique used to identify and segment speech in an audio stream. While it is a valuable tool for transcription, it can be detrimental to language detection. The `faster-whisper` model's language detection is based on the analysis of the entire audio signal, including non-speech segments. By disabling VAD, we ensure that the model receives the full, unaltered audio signal, which leads to more accurate and consistent language identification.
+Base URL: `http://<host>:<port>` (defaults to `http://0.0.0.0:8080`).
 
-**The Detection Pipeline:**
+POST /jobs
+- Upload audio file. Returns `EnqueueResponse` with `job_id`.
 
-1.  **Audio Loading:** The audio file is loaded and resampled to 16kHz mono, 32-bit float.
-2.  **Feature Extraction:** The audio is converted into a mel spectrogram.
-3.  **Language Detection:** The `detect_language` method of the `WhisperModel` is used to identify the language with the highest probability. This method does not use VAD.
+```bash
+curl -X POST "http://localhost:8080/jobs" -F "file=@/path/to/audio.wav"
+```
 
-**Model Comparison:**
+POST /jobs/by-url
+- Submit audio by URL.
 
-| Model      | VRAM (GB) | Speed (vs. large) |
-|------------|-----------|-------------------|
-| `tiny`     | ~1        | ~32x              |
-| `base`     | ~1        | ~16x              |
-| `small`    | ~2        | ~6x               |
-| `medium`   | ~5        | ~2x               |
-| `large-v3` | ~8        | 1x                |
+```bash
+curl -X POST "http://localhost:8080/jobs/by-url" -H "Content-Type: application/json" -d '{"url":"https://example.com/audio.wav"}'
+```
 
-## 7. API Reference
+GET /jobs
+- List recent jobs.
 
-**Endpoints:**
+GET /jobs/{job_id}
+- Get job status and metadata.
 
-| Endpoint                | Method | Description                               |
-|-------------------------|--------|-------------------------------------------|
-| `/jobs`                 | `POST` | Upload an audio file for processing.      |
-| `/jobs/by-url`          | `POST` | Submit a job from a URL.                  |
-| `/jobs/{job_id}`        | `GET`  | Get job status.                           |
-| `/jobs/{job_id}/result` | `GET`  | Get job result.                           |
-| `/metrics/prometheus`   | `GET`  | Get Prometheus-formatted metrics.         |
+GET /jobs/{job_id}/result
+- Get final result JSON for completed job.
 
-**`POST /jobs`**
-Uploads an audio file as `multipart/form-data`.
-*   **`curl` Example (using PowerShell):**
-    ```powershell
-    curl.exe -X POST -F "file=@C:\path\to\audio.wav" http://localhost:8080/jobs
-    ```
+GET /metrics
+- Get service metrics.
 
-**`GET /jobs/{job_id}`**
-Poll this endpoint to check job status.
-*   **`curl` Example (using PowerShell):**
-    ```powershell
-    curl.exe http://localhost:8080/jobs/a1b2c3d4-e5f6-7890-1234-567890abcdef
-    ```
+GET /healthz
+- Health check endpoint.
 
-## 8. Operations & Logging on Windows
+## H. Storage + DB Layout
 
-**Log Locations:**
-When running under NSSM, logs are typically directed to the `logs` folder within the application directory:
-*   `C:\langid_service\logs\service.out.log`: Standard output.
-*   `C:\langid_service\logs\service.err.log`: Standard error.
+Storage structure:
+- `STORAGE_DIR/<job_id>/input.*` — uploaded or downloaded source audio.
+- `STORAGE_DIR/<job_id>/probe.wav` — probe audio window.
+- `STORAGE_DIR/<job_id>/result.json` — optional persisted copy of `result_json`.
 
-**Diagnosing Common Errors:**
-*   **`InvalidAudioError`**: The audio file is likely corrupt or in an unsupported format.
-*   **`No module named faster_whisper`**: The service is running outside of its virtual environment. Check the paths in your NSSM configuration to ensure it's using the Python executable from the `.venv` directory.
+SQLite job table fields (summary): `id`, `input_path`, `status`, `progress`, `result_json`, `created_at`, `updated_at`, `attempts`, `error`.
 
-## 9. Future Work & Scaling
+## I. Installation & Running
 
-*   **Job Queue:** For higher throughput, replace the SQLite queue with a dedicated message broker like **Redis** or **RabbitMQ**.
-*   **Containerization:** A `Dockerfile` could be created using a Windows container base image.
-*   **Cloud Migration:** A potential cloud-native architecture would be: API Gateway → SQS Queue → Lambda Worker.
+Linux quick start:
+
+```bash
+git clone https://github.com/<org>/LangId-mr.git /path/to/project
+cd /path/to/project/langid_service
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+export WHISPER_DEVICE=auto
+export WHISPER_MODEL_SIZE=base
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8080
+```
+
+Production example with `gunicorn`:
+
+```bash
+gunicorn -w 4 -k uvicorn.workers.UvicornWorker "app.main:app" -b 0.0.0.0:8080
+```
+
+Windows Server (summary):
+- Install Python 3.11 and Node 20.
+- Create `.venv`, `pip install -r requirements.txt`.
+- Build the dashboard (`cd dashboard && npm ci && npm run build`) and set `public/config.js` accordingly.
+- Use NSSM or another service manager to register the API and optional static dashboard service.
+
+## J. Examples
+
+Good English output:
+
+```json
+{
+  "job_id": "...",
+  "language": "en",
+  "probability": 0.98,
+  "transcript_snippet": "Hello and welcome...",
+  "gate_decision": "ACCEPT_AUTODETECT",
+  "music_only": false
+}
+```
+
+Music-only output example:
+
+```json
+{
+  "job_id": "...",
+  "language": "none",
+  "gate_decision": "NO_SPEECH_MUSIC_ONLY",
+  "music_only": true,
+  "transcript_snippet": ""
+}
+```
+
+
+## Troubleshooting and Notes
+
+- For SQLite concurrency, enable WAL mode and tune `MAX_WORKERS` to match I/O capacity.
+
+### SQLite WAL Mode
+
+To improve concurrency when multiple worker processes update the jobs table:
+
+1. **Enable WAL mode**
+   SQLite journal mode can be enabled permanently by running:
+
+   ```bash
+   sqlite3 langid.sqlite "PRAGMA journal_mode=WAL;"
+   ```
+
+   Or ensure it is automatically applied in `_db_connect()`:
+
+   ```python
+   conn.execute("PRAGMA journal_mode=WAL;")
+   conn.execute("PRAGMA busy_timeout = 5000;")
+   ```
+
+2. **Why WAL helps**
+   - Readers no longer block writers.
+   - Writers mostly do not block readers.
+   - Greatly reduces `database is locked` errors under concurrent workers.
+
+3. **Recommended worker tuning**
+   - Keep `MAX_WORKERS` low unless running on fast SSD.
+   - Typical stable config:
+     - `MAX_WORKERS=2`
+     - `MAX_CONCURRENT_JOBS=1`
+
+- Use structured logs in `LOG_DIR` and expose Prometheus metrics for monitoring.
+
+

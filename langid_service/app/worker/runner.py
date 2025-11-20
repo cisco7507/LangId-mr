@@ -1,7 +1,12 @@
 # langid_service/app/worker/runner.py
 import os
 import json
-from datetime import datetime, UTC
+try:
+    from datetime import datetime, UTC
+except ImportError:  # Python < 3.11
+    from datetime import datetime, timezone
+
+    UTC = timezone.utc
 from typing import Optional
 from sqlalchemy.orm import Session
 from loguru import logger
@@ -33,66 +38,113 @@ def process_one(session: Session, job: Job) -> None:
 
         # Detect language with EN/FR gate using the in-memory audio
         lang_info = detect_lang_en_fr_only(audio)
+        music_only = bool(lang_info.get("music_only"))
         lang = lang_info["language"]
+        detection_method = lang_info.get("method", "autodetect")
+        gate_decision = lang_info.get("gate_decision")
+        gate_meta = lang_info.get("gate_meta") or {}
 
         # Extract language probability from gate output (fallback to 0.0 if missing)
-        raw_prob = lang_info.get("language_probability")
+        raw_prob = lang_info.get("probability")
         if raw_prob is None:
-            raw_prob = lang_info.get("probability")
+            raw_prob = lang_info.get("language_probability")
         try:
             prob = float(raw_prob) if raw_prob is not None else 0.0
         except (TypeError, ValueError):
             prob = 0.0
 
-        # Decide whether to use VAD based on configured minimum probability
-        use_vad = prob < LANG_DETECT_MIN_PROB
+        # Decide whether to use VAD based on gate hint, falling back to probability threshold
+        use_vad = lang_info.get("use_vad")
+        if use_vad is None:
+            use_vad = prob < LANG_DETECT_MIN_PROB
 
-        # Transcribe only the first SNIPPET_MAX_SECONDS of audio for the snippet
-        snippet_samples = int(SNIPPET_MAX_SECONDS * 16000)  # 16 kHz mono
-        snippet_audio = audio[:snippet_samples]
-
-        model = get_model()
-        segments, info = model.transcribe(
-            snippet_audio,
-            language=lang,
-            beam_size=5,
-            best_of=5,
-            vad_filter=use_vad,
-            suppress_blank=True,
-        )
-        text = " ".join([s.text for s in segments])
-        # Extract only the first 10 spoken words
-        snippet = " ".join(text.split()[:10])
-
-        # Make info JSON-serializable (TranscriptionOptions and other objects may be present)
-        if hasattr(info, "_asdict"):
-            raw_info = info._asdict()
+        gate_meta = dict(gate_meta) if isinstance(gate_meta, dict) else {}
+        if not gate_meta:
+            gate_meta = {
+                "mid_zone": False,
+                "language": lang,
+                "probability": prob,
+                "stopword_ratio_en": 0.0,
+                "stopword_ratio_fr": 0.0,
+                "token_count": 0,
+            }
         else:
-            raw_info = {}
-            for k, v in vars(info).items():
-                try:
-                    # keep primitives / simple containers as-is
-                    json.dumps(v)
-                    raw_info[k] = v
-                except TypeError:
-                    # fall back to string for non-serializable objects
-                    raw_info[k] = str(v)
+            gate_meta.setdefault("mid_zone", False)
+            gate_meta.setdefault("language", lang)
+            gate_meta.setdefault("probability", prob)
+            gate_meta.setdefault("stopword_ratio_en", 0.0)
+            gate_meta.setdefault("stopword_ratio_fr", 0.0)
+            gate_meta.setdefault("token_count", 0)
 
-        # Drop noisy/verbose fields we don't need to store
-        raw_info.pop("transcription_options", None)
+        gate_meta["vad_used"] = bool(use_vad)
+        gate_meta["music_only"] = music_only
+
+        text = ""
+        snippet = ""
+        raw_info = {
+            "language": lang,
+            "language_probability": prob,
+        }
+
+        if not music_only and lang in {"en", "fr"}:
+            # Transcribe only the first SNIPPET_MAX_SECONDS of audio for the snippet
+            snippet_samples = int(SNIPPET_MAX_SECONDS * 16000)  # 16 kHz mono
+            snippet_audio = audio[:snippet_samples]
+
+            model = get_model()
+            segments, info = model.transcribe(
+                snippet_audio,
+                language=lang,
+                beam_size=5,
+                best_of=5,
+                vad_filter=use_vad,
+                suppress_blank=True,
+            )
+            text = " ".join([s.text for s in segments])
+            # Extract only the first 10 spoken words
+            snippet = " ".join(text.split()[:10])
+
+            # Make info JSON-serializable (TranscriptionOptions and other objects may be present)
+            if hasattr(info, "_asdict"):
+                raw_info = info._asdict()
+            else:
+                raw_info = {}
+                for k, v in vars(info).items():
+                    try:
+                        # keep primitives / simple containers as-is
+                        json.dumps(v)
+                        raw_info[k] = v
+                    except TypeError:
+                        # fall back to string for non-serializable objects
+                        raw_info[k] = str(v)
+
+            # Drop noisy/verbose fields we don't need to store
+            raw_info.pop("transcription_options", None)
+        else:
+            raw_info["note"] = "music-only clip (no transcription run)"
 
         result = {
             "language": lang,
             "probability": prob,
             "text": snippet,
+            "detection_method": detection_method,
+            "gate_decision": gate_decision,
+            "gate_meta": gate_meta,
+            "music_only": music_only,
             "raw": {
                 "text": snippet,
                 "info": raw_info,
+                "lang_gate": lang_info,
             }
         }
 
         # Translate if target language is provided
-        if job.target_lang and job.target_lang != lang:
+        if (
+            job.target_lang
+            and not music_only
+            and lang in {"en", "fr"}
+            and job.target_lang != lang
+        ):
             translated_text = translate_en_fr_only(text, source_lang=lang, target_lang=job.target_lang)
             result["translated"] = True
             result["result"] = translated_text

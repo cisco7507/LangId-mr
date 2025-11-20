@@ -1,6 +1,17 @@
-from faster_whisper import WhisperModel
+from typing import Optional, Any
+
+try:
+    from faster_whisper import WhisperModel  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency in minimal test env
+    WhisperModel = None  # type: ignore
+
 from loguru import logger
-import torch
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - allow lightweight envs
+    torch = None  # type: ignore
+
 from ..config import (
     WHISPER_MODEL_SIZE,
     WHISPER_DEVICE,
@@ -8,16 +19,24 @@ from ..config import (
 
 _model = None
 
-def get_model() -> WhisperModel:
+def get_model() -> Any:
     """
     Initializes and returns a singleton instance of the WhisperModel.
     """
     global _model
     if _model is None:
+        if WhisperModel is None:
+            raise ImportError(
+                "faster-whisper is not installed. Install dependencies to run inference."
+            )
+
         logger.info(f"Loading Whisper model '{WHISPER_MODEL_SIZE}' on device '{WHISPER_DEVICE}'")
         device_type = WHISPER_DEVICE
         if device_type == "auto":
-            device_type = "cuda" if torch.cuda.is_available() else "cpu"
+            if torch is None:
+                device_type = "cpu"
+            else:
+                device_type = "cuda" if torch.cuda.is_available() else "cpu"
 
         _model = WhisperModel(
             WHISPER_MODEL_SIZE,

@@ -1,13 +1,54 @@
 # langid_service/app/services/audio_io.py
 import numpy as np
-import av
+try:
+    import av
+except Exception:
+    # PyAV is optional; the loader will fall back to the stdlib `wave`
+    # and `soundfile` backends when PyAV is not available in the
+    # environment (e.g. during lightweight local testing).
+    av = None
 import wave
 import soundfile as sf
 from io import BytesIO
 
+
 class InvalidAudioError(ValueError):
     """Custom exception for audio processing errors."""
     pass
+
+
+def _resample_to_16k(audio: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Linearly resample a mono signal to 16 kHz."""
+    if sample_rate == 16000 or sample_rate <= 0 or audio.size == 0:
+        return audio.astype(np.float32)
+
+    import math
+
+    target_len = int(math.ceil(len(audio) * 16000.0 / float(sample_rate)))
+    if target_len <= 0:
+        raise InvalidAudioError("Resampling produced no samples.")
+
+    x_old = np.linspace(
+        0.0, 1.0, num=len(audio), endpoint=False, dtype=np.float32
+    )
+    x_new = np.linspace(
+        0.0, 1.0, num=target_len, endpoint=False, dtype=np.float32
+    )
+    return np.interp(x_new, x_old, audio).astype(np.float32)
+
+
+def _load_with_soundfile(file_path: str) -> np.ndarray:
+    """Decode audio via soundfile, producing mono float32 at 16 kHz."""
+    try:
+        audio, sample_rate = sf.read(file_path, dtype="float32", always_2d=False)
+    except Exception as exc:
+        raise InvalidAudioError(f"Failed to decode audio via soundfile: {exc}") from exc
+
+    if isinstance(audio, np.ndarray) and audio.ndim > 1:
+        audio = audio.mean(axis=1)
+
+    audio = np.asarray(audio, dtype=np.float32)
+    return _resample_to_16k(audio, sample_rate)
 
 def load_audio_mono_16k(file_path: str) -> np.ndarray:
     """
@@ -21,6 +62,17 @@ def load_audio_mono_16k(file_path: str) -> np.ndarray:
     Raises:
         InvalidAudioError: If the audio cannot be decoded or processed.
     """
+    first_error: InvalidAudioError | None = None
+
+    # Try the libsndfile-backed path first; it handles the widest range of
+    # common PCM variants (including 24-bit) without extra work.
+    try:
+        return _load_with_soundfile(file_path)
+    except InvalidAudioError as exc:
+        first_error = exc
+    except Exception as exc:  # pragma: no cover - defensive guard
+        first_error = InvalidAudioError(f"Unexpected error via soundfile: {exc}")
+
     try:
         # --- Fast path: standard WAV via wave ---
         try:
@@ -46,6 +98,24 @@ def load_audio_mono_16k(file_path: str) -> np.ndarray:
                 dtype = np.uint8
                 audio_u8 = np.frombuffer(raw, dtype=dtype).astype(np.float32)
                 audio = (audio_u8 - 128.0) / 128.0
+            elif sampwidth == 3:
+                # 24-bit PCM (3 bytes per sample) — not directly supported by
+                # NumPy dtypes. Convert from packed little-endian 3-byte words
+                # into signed 32-bit integers, then normalize to [-1, 1].
+                # Layout: little-endian bytes [b0, b1, b2] => value = b0 | b1<<8 | b2<<16
+                b = np.frombuffer(raw, dtype=np.uint8)
+                if b.size % 3 != 0:
+                    raise InvalidAudioError("Corrupt WAV: unexpected byte length for 24-bit samples")
+                # reshape to (n_samples * n_channels, 3)
+                b = b.reshape(-1, 3)
+                # assemble little-endian 24-bit values into 32-bit ints
+                vals = (b[:, 0].astype(np.int32)
+                        | (b[:, 1].astype(np.int32) << 8)
+                        | (b[:, 2].astype(np.int32) << 16))
+                # sign-extend 24-bit to 32-bit
+                sign_mask = 1 << 23
+                vals = np.where(vals & sign_mask, vals - (1 << 24), vals).astype(np.int32)
+                audio = vals.astype(np.float32) / float(1 << 23)
             else:
                 raise InvalidAudioError(f"Unsupported sample width: {sampwidth}")
 
@@ -56,27 +126,14 @@ def load_audio_mono_16k(file_path: str) -> np.ndarray:
                 except ValueError as exc:
                     raise InvalidAudioError(f"Corrupt WAV channel data: {exc}") from exc
 
-            # Naive resample to 16 kHz if the source rate is different.
-            if sample_rate != 16000 and sample_rate > 0 and audio.size > 0:
-                import math
-
-                target_len = int(math.ceil(len(audio) * 16000.0 / float(sample_rate)))
-                if target_len <= 0:
-                    raise InvalidAudioError("Resampling produced no samples.")
-
-                x_old = np.linspace(
-                    0.0, 1.0, num=len(audio), endpoint=False, dtype=np.float32
-                )
-                x_new = np.linspace(
-                    0.0, 1.0, num=target_len, endpoint=False, dtype=np.float32
-                )
-                audio = np.interp(x_new, x_old, audio).astype(np.float32)
-
-            # Ensure final dtype is float32.
+            audio = _resample_to_16k(audio, sample_rate)
             return audio.astype(np.float32)
 
+        except InvalidAudioError:
+            # Try a more tolerant decoder before giving up.
+            return _load_with_soundfile(file_path)
         except (wave.Error, OSError):
-            # Not a simple WAV, fall through to PyAV.
+            # Not a simple WAV, fall through to more general decoders.
             pass
 
         # --- Fallback: PyAV for general formats ---
@@ -127,71 +184,12 @@ def load_audio_mono_16k(file_path: str) -> np.ndarray:
             raise InvalidAudioError(f"Failed to decode audio via PyAV: {exc}") from exc
 
     except InvalidAudioError:
-        # Pass through domain-specific errors unchanged.
+        # If libsndfile already reported an error, prefer that context so
+        # callers see the root cause for failures surfaced before falling
+        # back through multiple decoders.
+        if first_error is not None:
+            raise InvalidAudioError(str(first_error))
         raise
     except Exception as exc:
         # Normalize unexpected exceptions into InvalidAudioError for callers.
         raise InvalidAudioError(f"Unexpected error while loading audio: {exc}") from exc
-    """
-    Loads an audio file from the given path, converts it to a 16kHz,
-    mono, 32-bit float NumPy array. This function provides a robust
-    decoding path with fallbacks.
-
-    Supported formats include WAV, MP3, AAC, and G.711 A-Law.
-
-    Args:
-        file_path: The path to the audio file.
-
-    Returns:
-        A NumPy array containing the audio waveform.
-
-    Raises:
-        InvalidAudioError: If the audio cannot be decoded or processed.
-    """
-    try:
-        # PyAV is the most robust and handles the most formats
-        with av.open(file_path) as container:
-            stream = container.streams.audio[0]
-            # Set up the resampler to convert to 16kHz mono float32
-            resampler = av.AudioResampler(
-                format="s16",  # A common intermediate format
-                layout="mono",
-                rate=16000,
-            )
-            frames = []
-            for frame in container.decode(stream):
-                frames.extend(resampler.resample(frame))
-
-            if not frames:
-                 raise InvalidAudioError("Audio file is empty or contains no valid frames.")
-
-            # Concatenate resampled frames
-            audio_data = np.concatenate([np.frombuffer(frame.to_ndarray(), dtype=np.int16) for frame in frames])
-            # Convert to float32 and normalize
-            return audio_data.astype(np.float32) / 32768.0
-
-    except (av.AVError, IndexError, StopIteration) as e:
-        # Fallback to soundfile for tricky WAVs
-        try:
-            with open(file_path, "rb") as f:
-                data, samplerate = sf.read(BytesIO(f.read()))
-
-            # If stereo, convert to mono
-            if data.ndim > 1:
-                data = data.mean(axis=1)
-
-            # If not 16kHz, this will fail here, which is intended
-            if samplerate != 16000:
-                 raise InvalidAudioError(
-                    f"Unsupported sample rate: {samplerate}. Must be 16kHz."
-                )
-
-            return data.astype(np.float32)
-
-        except Exception as sf_e:
-            raise InvalidAudioError(
-                f"Failed to decode audio with all available backends. "
-                f"PyAV error: {e}. SoundFile error: {sf_e}"
-            )
-    except Exception as e:
-        raise InvalidAudioError(f"An unexpected error occurred during audio processing: {e}")

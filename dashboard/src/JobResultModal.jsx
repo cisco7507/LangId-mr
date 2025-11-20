@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
-import PipelineDocsModal from "./PipelineDocsModal";
+import PipelineDocsModal from "./PipelineDocsModal.jsx";
 import { API_BASE } from "./config";
 
 const METHOD_DISPLAY = {

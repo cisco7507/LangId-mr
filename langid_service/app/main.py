@@ -1,5 +1,11 @@
-import io, os, tempfile, time, threading, json
-from datetime import datetime, timedelta, UTC
+import io, os, tempfile, time, json
+import multiprocessing as mp
+try:
+    from datetime import datetime, timedelta, UTC
+except ImportError:  # Python < 3.11
+    from datetime import datetime, timedelta, timezone
+
+    UTC = timezone.utc
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Response
 from fastapi.responses import JSONResponse
@@ -45,23 +51,38 @@ logger.add((LOG_DIR / "service.log").as_posix(), rotation="10 MB", retention=10,
 Base.metadata.create_all(bind=engine)
 ensure_dirs()
 
-# Background worker thread loop
-_stop_event = threading.Event()
+# Background worker process loop
+MP_CONTEXT = mp.get_context("spawn")
+_stop_event = MP_CONTEXT.Event()
+worker_processes = []
 
-def worker_loop():
-    logger.info("Worker loop started")
-    while not _stop_event.is_set():
-        worked = work_once()
-        if not worked:
-            time.sleep(0.05)
+def worker_loop(stop_event):
+    logger.info(f"Worker process {os.getpid()} started")
+    try:
+        while not stop_event.is_set():
+            worked = work_once()
+            if not worked:
+                time.sleep(0.05)
+    finally:
+        logger.info(f"Worker process {os.getpid()} exiting")
 
-worker_threads = []
+
 def start_workers():
+    if _stop_event.is_set():
+        _stop_event.clear()
+
+    worker_processes.clear()
+
     for i in range(MAX_WORKERS):
-        t = threading.Thread(target=worker_loop, name=f"worker-{i+1}", daemon=True)
-        t.start()
-        worker_threads.append(t)
-    logger.info(f"Started {len(worker_threads)} worker threads")
+        p = MP_CONTEXT.Process(
+            target=worker_loop,
+            name=f"worker-{i+1}",
+            args=(_stop_event,),
+            daemon=True,
+        )
+        p.start()
+        worker_processes.append(p)
+    logger.info(f"Started {len(worker_processes)} worker processes")
 
 @app.on_event("startup")
 def on_startup():
@@ -70,8 +91,11 @@ def on_startup():
 @app.on_event("shutdown")
 def on_shutdown():
     _stop_event.set()
-    for t in worker_threads:
-        t.join(timeout=5)
+    for p in worker_processes:
+        p.join(timeout=10)
+        if p.is_alive():
+            logger.warning(f"Worker process {p.pid} did not exit in time; terminating")
+            p.terminate()
 
 @app.get("/healthz")
 def healthz():
@@ -348,6 +372,10 @@ def get_result(job_id: str):
             job_id=job.id,
             language=raw.get("language", "unknown"),
             probability=raw.get("probability", 0.0), # Note: worker doesn't set this field
+            detection_method=raw.get("detection_method"),
+            gate_decision=raw.get("gate_decision"),
+            gate_meta=raw.get("gate_meta"),
+            music_only=raw.get("music_only", False),
             transcript_snippet=transcript_snippet,
             processing_ms=raw.get("processing_ms", 0),
             original_filename=job.original_filename,
