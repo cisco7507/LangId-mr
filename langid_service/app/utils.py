@@ -1,6 +1,7 @@
 from uuid import uuid4
 from pathlib import Path
 import shutil
+from typing import Optional
 from .config import STORAGE_DIR, ALLOWED_EXTS, MAX_UPLOAD_BYTES
 
 def gen_uuid():
@@ -16,15 +17,37 @@ def validate_upload(filename: str, size: int):
     if ext not in ALLOWED_EXTS:
         raise ValueError(f"File extension '{ext}' not allowed")
 
-def move_to_storage(src: Path, job_id: str) -> Path:
-    # Preserve the source file suffix (if any) when moving into storage so
-    # the stored filename retains a sensible extension (e.g. .mp3, .wav).
-    # This makes MIME-type detection via filename possible later.
-    suffix = src.suffix or ""
-    dest = STORAGE_DIR / f"{job_id}{suffix}"
-    # Ensure storage dir exists
+def move_to_storage(src: Path, job_id: str, original_filename: Optional[str] = None) -> Path:
+    """
+    Move an uploaded/temp file into the storage dir and preserve a usable
+    filename suffix when possible.
+
+    - If `original_filename` has a known extension (in ALLOWED_EXTS) we
+      store as `<job_id><ext>`.
+    - Else, if `src` already has a suffix in ALLOWED_EXTS, preserve it.
+    - Otherwise fall back to storing as `STORAGE_DIR/<job_id>`.
+    """
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(src), str(dest))
+
+    # Determine suffix to preserve (only allow known extensions)
+    suffix = ""
+    if original_filename:
+        suf = Path(original_filename).suffix.lower()
+        if suf in ALLOWED_EXTS:
+            suffix = suf
+
+    if not suffix:
+        # Fall back to the temp/src suffix if present
+        src_suf = src.suffix.lower()
+        if src_suf in ALLOWED_EXTS:
+            suffix = src_suf
+
+    if suffix:
+        dest = STORAGE_DIR / f"{job_id}{suffix}"
+    else:
+        dest = STORAGE_DIR / job_id
+
+    shutil.move(str(src), dest)
     return dest
 
 def truncate_to_words(text: str, max_words: int = 10) -> str:

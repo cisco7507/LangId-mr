@@ -279,10 +279,7 @@ async def submit_job(file: UploadFile = File(...), target_lang: Optional[str] = 
         raise HTTPException(status_code=400, detail=str(e))
 
     # Write temp file then move to storage
-    # Create temp file using the original filename's suffix where possible so
-    # the temporary file preserves the extension (helps later MIME detection).
-    orig_suffix = Path(file.filename).suffix or ""
-    with tempfile.NamedTemporaryFile(delete=False, suffix=orig_suffix) as tmp:
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
         tmp.write(raw)
         tmp.flush()
         tmp_path = Path(tmp.name)
@@ -293,7 +290,7 @@ async def submit_job(file: UploadFile = File(...), target_lang: Optional[str] = 
         validate_language_strict(audio)
 
     job_id = gen_uuid()
-    stored = move_to_storage(tmp_path, job_id)
+    stored = move_to_storage(tmp_path, job_id, original_filename=file.filename)
     logger.info(f"Enqueued upload for job {job_id}: {stored}")
 
     # Persist job
@@ -346,7 +343,7 @@ async def submit_job_by_url(payload: SubmitByUrl, target_lang: Optional[str] = N
             audio = load_audio_mono_16k(str(tmp_file))
             validate_language_strict(audio)
 
-        stored = move_to_storage(tmp_file, job_id)
+        stored = move_to_storage(tmp_file, job_id, original_filename=original_filename)
     except Exception as e:
         if tmp_file.exists():
             tmp_file.unlink(missing_ok=True)
@@ -443,26 +440,29 @@ def get_job_audio(job_id: str):
         if not audio_path.exists():
             raise HTTPException(status_code=404, detail="Audio file not found on server")
 
-        # Prefer the original filename (if available) for mime-type guessing
-        mime_type = None
-        if job.original_filename:
+        # Prefer guessing MIME from the stored filename (which we now preserve),
+        # or fall back to the original filename that was uploaded.
+        mime_type, _ = mimetypes.guess_type(audio_path.name)
+        if not mime_type and job.original_filename:
             mime_type, _ = mimetypes.guess_type(job.original_filename)
 
-        # Fallback to the stored file's name
+        # If still unknown, try content-based detection via python-magic (optional).
         if not mime_type:
-            mime_type, _ = mimetypes.guess_type(str(audio_path))
+            try:
+                import magic
+                m = magic.Magic(mime=True)
+                mime_type = m.from_file(str(audio_path))
+            except Exception:
+                # python-magic not installed or failed — leave mime_type None
+                mime_type = None
 
-        # As a last resort, avoid mislabeling non-WAV as WAV; fall back to
-        # generic binary if unknown. Consumers can still play if browser
-        # detects audio by content. Using 'application/octet-stream' is
-        # safer than forcing 'audio/wav' for unknown types.
+        # Fallback to a safe generic if still unknown (better than mislabeling)
         if not mime_type:
             mime_type = "application/octet-stream"
 
-        # Return as inline content so browsers can stream in an <audio> element
-        # Use the original filename in the Content-Disposition when available
-        disp_name = job.original_filename or audio_path.name
-        headers = {"Content-Disposition": f'inline; filename="{disp_name}"'}
+        # Use the original filename as the suggested download/playback name when available.
+        suggested_filename = job.original_filename or audio_path.name or f"{job.id}"
+        headers = {"Content-Disposition": f'inline; filename="{suggested_filename}"'}
         return FileResponse(path=str(audio_path), media_type=mime_type, headers=headers)
     finally:
         session.close()
