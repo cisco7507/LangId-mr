@@ -105,17 +105,24 @@ def test_delete_job(mock_get_model, mock_load_audio, client):
         r = client.post("/jobs", files=data)
     assert r.status_code == 200, r.text
     job_id = r.json()["job_id"]
+    # Ensure the uploaded file was stored on disk
+    from langid_service.app.config import STORAGE_DIR
+    stored_path = (STORAGE_DIR / job_id)
+    assert stored_path.exists(), f"Expected storage artifact for job {job_id} at {stored_path}"
 
-    # Delete the job
+    # Delete the job via API
     r = client.request("DELETE", "/jobs", json={"job_ids": [job_id]})
     assert r.status_code == 200, r.text
     js = r.json()
     assert js["status"] == "ok"
     assert js["deleted_count"] == 1
 
-    # Verify the job is gone
+    # Verify the job is gone from DB
     r = client.get(f"/jobs/{job_id}")
     assert r.status_code == 404, r.text
+
+    # And the storage artifact is removed
+    assert not stored_path.exists(), f"Storage artifact still present after delete: {stored_path}"
 
 def test_metrics_prometheus(client):
     r = client.get("/metrics/prometheus")

@@ -8,7 +8,8 @@ except ImportError:  # Python < 3.11
     UTC = timezone.utc
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+import mimetypes
 from pydantic import ValidationError
 from loguru import logger
 from sqlalchemy.orm import Session
@@ -16,7 +17,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from .metrics import REGISTRY
 from typing import Optional
 
-from .config import LOG_DIR, MAX_WORKERS, WHISPER_MODEL_SIZE, MAX_FILE_SIZE_MB, ENFR_STRICT_REJECT
+from .config import LOG_DIR, MAX_WORKERS, WHISPER_MODEL_SIZE, MAX_FILE_SIZE_MB, ENFR_STRICT_REJECT, STORAGE_DIR
 from .database import Base, engine, SessionLocal
 from .models.models import Job, JobStatus
 from .schemas import EnqueueResponse, JobStatusResponse, ResultResponse, SubmitByUrl, JobListResponse, DeleteJobsRequest
@@ -27,6 +28,7 @@ from .lang_gate import validate_language_strict
 from .services.audio_io import load_audio_mono_16k
 
 from fastapi.middleware.cors import CORSMiddleware
+import shutil
 import os
 
 
@@ -222,10 +224,44 @@ def delete_jobs(payload: DeleteJobsRequest):
     session = SessionLocal()
     try:
         jobs_to_delete = session.query(Job).filter(Job.id.in_(payload.job_ids)).all()
+        deleted_count = 0
+        # Attempt to remove any storage artifacts for each job id.
+        storage_root = STORAGE_DIR.resolve()
         for job in jobs_to_delete:
-            session.delete(job)
+            try:
+                # Remove any files or directories in STORAGE_DIR that start with the job id
+                pattern = f"{job.id}*"
+                for p in storage_root.glob(pattern):
+                    try:
+                        # Ensure the matched path is inside the storage directory
+                        try:
+                            resolved = p.resolve()
+                        except Exception:
+                            resolved = p
+                        if storage_root not in resolved.parents and resolved != storage_root:
+                            # skip anything outside storage (extra safety)
+                            logger.warning(f"Skipping deletion of path outside storage: {p}")
+                            continue
+
+                        if p.is_dir():
+                            shutil.rmtree(p)
+                        else:
+                            p.unlink(missing_ok=True)
+                        logger.info(f"Removed storage artifact for job {job.id}: {p}")
+                    except Exception:
+                        logger.exception(f"Failed to remove storage artifact {p} for job {job.id}")
+            except Exception:
+                logger.exception(f"Error while cleaning storage for job {job.id}")
+
+            # delete DB record
+            try:
+                session.delete(job)
+                deleted_count += 1
+            except Exception:
+                logger.exception(f"Failed to delete job record {job.id}")
+
         session.commit()
-        return {"status": "ok", "deleted_count": len(jobs_to_delete)}
+        return {"status": "ok", "deleted_count": deleted_count}
     finally:
         session.close()
 
@@ -254,7 +290,7 @@ async def submit_job(file: UploadFile = File(...), target_lang: Optional[str] = 
         validate_language_strict(audio)
 
     job_id = gen_uuid()
-    stored = move_to_storage(tmp_path, job_id)
+    stored = move_to_storage(tmp_path, job_id, original_filename=file.filename)
     logger.info(f"Enqueued upload for job {job_id}: {stored}")
 
     # Persist job
@@ -307,7 +343,7 @@ async def submit_job_by_url(payload: SubmitByUrl, target_lang: Optional[str] = N
             audio = load_audio_mono_16k(str(tmp_file))
             validate_language_strict(audio)
 
-        stored = move_to_storage(tmp_file, job_id)
+        stored = move_to_storage(tmp_file, job_id, original_filename=original_filename)
     except Exception as e:
         if tmp_file.exists():
             tmp_file.unlink(missing_ok=True)
@@ -381,5 +417,52 @@ def get_result(job_id: str):
             original_filename=job.original_filename,
             raw=raw,
         )
+    finally:
+        session.close()
+
+
+@app.get("/jobs/{job_id}/audio")
+def get_job_audio(job_id: str):
+    """Serve the original uploaded audio file for a job.
+
+    This returns a `FileResponse` with an appropriate audio content-type.
+    The dashboard uses this endpoint to embed an audio player.
+    """
+    session = SessionLocal()
+    try:
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if not job.input_path:
+            raise HTTPException(status_code=404, detail="No input audio available for this job")
+
+        audio_path = Path(job.input_path)
+        if not audio_path.exists():
+            raise HTTPException(status_code=404, detail="Audio file not found on server")
+
+        # Prefer guessing MIME from the stored filename (which we now preserve),
+        # or fall back to the original filename that was uploaded.
+        mime_type, _ = mimetypes.guess_type(audio_path.name)
+        if not mime_type and job.original_filename:
+            mime_type, _ = mimetypes.guess_type(job.original_filename)
+
+        # If still unknown, try content-based detection via python-magic (optional).
+        if not mime_type:
+            try:
+                import magic
+                m = magic.Magic(mime=True)
+                mime_type = m.from_file(str(audio_path))
+            except Exception:
+                # python-magic not installed or failed — leave mime_type None
+                mime_type = None
+
+        # Fallback to a safe generic if still unknown (better than mislabeling)
+        if not mime_type:
+            mime_type = "application/octet-stream"
+
+        # Use the original filename as the suggested download/playback name when available.
+        suggested_filename = job.original_filename or audio_path.name or f"{job.id}"
+        headers = {"Content-Disposition": f'inline; filename="{suggested_filename}"'}
+        return FileResponse(path=str(audio_path), media_type=mime_type, headers=headers)
     finally:
         session.close()

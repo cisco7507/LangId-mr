@@ -251,8 +251,8 @@ function App() {
               </button>
             </div>
           </div>
-          <div className="max-h-[420px] overflow-y-auto">
-            <table className="min-w-full text-left text-sm">
+          <div>
+            <table className="w-full table-fixed text-left text-sm">
               <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-600">
                 <tr>
                   <th className="px-4 py-3">
@@ -305,7 +305,7 @@ function App() {
                           onChange={(event) => handleCheckboxClick(event, job.job_id)}
                         />
                       </td>
-                      <td className="px-4 py-3 font-mono text-[11px] text-slate-900 truncate">
+                      <td className="px-4 py-3 font-mono text-[11px] text-slate-900 truncate max-w-[180px]">
                         {job.job_id}
                       </td>
                       <td
@@ -342,14 +342,14 @@ function App() {
                       <td className="px-4 py-3">
                         <ProgressBar value={job.progress} />
                       </td>
-                      <td className="px-4 py-3 text-xs text-slate-600">
+                      <td className="px-4 py-3 text-xs text-slate-600 truncate max-w-[140px]">
                         {job.created_at}
                       </td>
-                      <td className="px-4 py-3 text-xs text-slate-600">
+                      <td className="px-4 py-3 text-xs text-slate-600 truncate max-w-[140px]">
                         {job.updated_at}
                       </td>
                       <td className="px-4 py-3 text-xs text-rose-300">
-                        <div className="max-h-12 overflow-y-auto whitespace-normal break-words">
+                        <div className="whitespace-normal break-words">
                           {job.error}
                         </div>
                       </td>

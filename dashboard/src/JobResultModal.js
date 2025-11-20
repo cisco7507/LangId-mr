@@ -24,6 +24,7 @@ export default function JobResultModal({ jobResult, onClose }) {
   const [loading, setLoading] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
   const [showPipelineDocs, setShowPipelineDocs] = useState(false);
+  const [audioError, setAudioError] = useState(null);
 
   const derived = useMemo(() => {
     if (!result) return null;
@@ -164,6 +165,56 @@ export default function JobResultModal({ jobResult, onClose }) {
                     >
                       {derived.originalFilename || "—"}
                     </p>
+                    {result?.job_id && (
+                      <div className="mt-2">
+                        <a
+                          className="text-xs text-sky-600 underline"
+                          href={`${API_BASE}/jobs/${result.job_id}/audio`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          Open / download audio
+                        </a>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Audio player */}
+                  <div className="rounded-lg border border-slate-200 bg-white p-3 md:col-span-5">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">
+                      Audio
+                    </p>
+                    <div className="mt-2">
+                      {result ? (
+                        <>
+                          <audio
+                            key={result.job_id}
+                            controls
+                            preload="metadata"
+                            className="w-full"
+                            src={`${API_BASE}/jobs/${result.job_id}/audio`}
+                            onError={() => setAudioError("Failed to load audio")}
+                          >
+                            Your browser does not support the audio element.
+                          </audio>
+                          <div className="mt-2 flex items-center justify-between gap-3">
+                            <a
+                              className="text-xs text-sky-600 underline"
+                              href={`${API_BASE}/jobs/${result.job_id}/audio`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              Open / download audio
+                            </a>
+                            {audioError && (
+                              <span className="text-xs text-rose-600">{audioError}</span>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <span className="text-xs text-slate-500">No audio available</span>
+                      )}
+                    </div>
                   </div>
 
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
