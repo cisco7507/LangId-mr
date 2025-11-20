@@ -17,6 +17,31 @@ const METHOD_DISPLAY = {
   },
 };
 
+/* Field explanations mapping (user-facing, ASCII only) */
+const FIELD_EXPLANATIONS = {
+  language: "Final language decision. 'none' means no usable spoken language detected.",
+  probability: "Confidence for the language decision (0.0 to 1.0). Higher is more certain.",
+  text: "Transcribed snippet. Empty when transcription was skipped or yielded no text.",
+  detection_method: "Method used to decide the language (for example 'autodetect').",
+  gate_decision: "High-level gate outcome explaining why the clip was accepted, rejected, or skipped.",
+  music_only: "True when the clip was classified as music or non-speech; transcription is skipped.",
+  translated: "True if a translated version of the text is present.",
+  'gate_meta.mid_zone': "True when the language score is in an ambiguous middle range.",
+  'gate_meta.language': "Gate's language candidate (may be 'none').",
+  'gate_meta.probability': "Gate-level confidence for the gate language (0.0 to 1.0).",
+  'gate_meta.stopword_ratio_en': "Fraction of English stopwords in the probe text.",
+  'gate_meta.stopword_ratio_fr': "Fraction of French stopwords in the probe text.",
+  'gate_meta.token_count': "Number of tokens (words) used by gate heuristics.",
+  'gate_meta.vad_used': "True if voice activity detection was used for analysis.",
+  'gate_meta.music_only': "True if the gate believes the clip is music or contains no speech.",
+  'gate_meta.config': "Gate configuration thresholds and heuristics.",
+  'raw.info.note': "Short note explaining why transcription was skipped or what happened.",
+  'raw.lang_gate.method': "Method used by the internal language gate (for example 'autodetect').",
+  'raw.lang_gate.gate_decision': "Lang_gate internal gate decision string.",
+  'raw.lang_gate.use_vad': "True if lang_gate recommended using VAD for this clip.",
+  'raw.lang_gate.music_only': "Lang_gate-level music detection flag.",
+};
+
 export default function JobResultModal({ jobResult, onClose }) {
   const modalRef = useRef(null);
   const [result, setResult] = useState(null);
@@ -252,6 +277,18 @@ export default function JobResultModal({ jobResult, onClose }) {
                     </p>
                   </div>
 
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">Gate decision</p>
+                    <p className="mt-1 text-xs text-slate-900">{result.gate_decision ?? "—"}</p>
+                    <p className="mt-2 text-[10px] text-slate-600">{FIELD_EXPLANATIONS.gate_decision}</p>
+                  </div>
+
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">Music only</p>
+                    <p className="mt-1 text-xs text-slate-900">{result.music_only ? "true" : "false"}</p>
+                    <p className="mt-2 text-[10px] text-slate-600">{FIELD_EXPLANATIONS.music_only}</p>
+                  </div>
+
                   <DetectionMethodCard
                     method={derived.detectionMethod}
                     langGate={derived.langGate}
@@ -288,18 +325,15 @@ export default function JobResultModal({ jobResult, onClose }) {
                         <div className="rounded-md bg-slate-50 p-2 text-[10px] text-slate-700">
                           <p className="mb-1 font-semibold text-slate-900">How to read this JSON</p>
                           <ul className="list-disc space-y-0.5 pl-4">
-                            <li><span className="font-mono">language</span>: ISO language code predicted for the audio (e.g. <span className="font-mono">"en"</span>, <span className="font-mono">"fr"</span>).</li>
-                            <li><span className="font-mono">probability</span>: Confidence for <span className="font-mono">language</span>, from 0 to 1.</li>
-                            <li><span className="font-mono">text</span>: Transcript snippet of what was detected in the audio.</li>
-                            <li><span className="font-mono">raw.text</span>: Full transcript returned by the underlying model.</li>
-                            <li><span className="font-mono">raw.info.language</span>: Language code reported by the model internals.</li>
-                            <li><span className="font-mono">raw.info.language_probability</span>: Confidence for that internal language, from 0 to 1.</li>
-                            <li><span className="font-mono">raw.info.duration</span>: Total audio duration in seconds.</li>
-                            <li><span className="font-mono">raw.info.duration_after_vad</span>: Duration after voice activity detection (speech-only part) in seconds.</li>
-                            <li><span className="font-mono">raw.info.all_language_probs</span>: If present, probability distribution over all candidate languages.</li>
-                            <li><span className="font-mono">raw.info.vad_options</span>: Voice activity detection parameters used for this run (if any).</li>
-                            <li><span className="font-mono">raw.lang_gate</span>: Snapshot of the EN/FR gate decision (language, probability, method) before packaging.</li>
-                            <li><span className="font-mono">translated</span>: Whether a translation step was applied on top of the original audio.</li>
+                            <li><span className="font-mono">language</span>: {FIELD_EXPLANATIONS.language}</li>
+                            <li><span className="font-mono">probability</span>: {FIELD_EXPLANATIONS.probability}</li>
+                            <li><span className="font-mono">text</span>: {FIELD_EXPLANATIONS.text}</li>
+                            <li><span className="font-mono">detection_method</span>: {FIELD_EXPLANATIONS.detection_method}</li>
+                            <li><span className="font-mono">gate_decision</span>: {FIELD_EXPLANATIONS.gate_decision}</li>
+                            <li><span className="font-mono">music_only</span>: {FIELD_EXPLANATIONS.music_only}</li>
+                            <li><span className="font-mono">gate_meta</span>: {FIELD_EXPLANATIONS['gate_meta'] ?? 'Gate metadata summary with internal scores.'}</li>
+                            <li><span className="font-mono">raw.info.note</span>: {FIELD_EXPLANATIONS['raw.info.note']}</li>
+                            <li><span className="font-mono">raw.lang_gate</span>: {FIELD_EXPLANATIONS['raw.lang_gate.method'] ?? 'Language-gate internal outputs.'}</li>
                           </ul>
                           <button
                             type="button"
