@@ -279,7 +279,10 @@ async def submit_job(file: UploadFile = File(...), target_lang: Optional[str] = 
         raise HTTPException(status_code=400, detail=str(e))
 
     # Write temp file then move to storage
-    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+    # Create temp file using the original filename's suffix where possible so
+    # the temporary file preserves the extension (helps later MIME detection).
+    orig_suffix = Path(file.filename).suffix or ""
+    with tempfile.NamedTemporaryFile(delete=False, suffix=orig_suffix) as tmp:
         tmp.write(raw)
         tmp.flush()
         tmp_path = Path(tmp.name)
@@ -440,13 +443,26 @@ def get_job_audio(job_id: str):
         if not audio_path.exists():
             raise HTTPException(status_code=404, detail="Audio file not found on server")
 
-        mime_type, _ = mimetypes.guess_type(str(audio_path))
-        # Default to wav if unknown to make browsers happy
+        # Prefer the original filename (if available) for mime-type guessing
+        mime_type = None
+        if job.original_filename:
+            mime_type, _ = mimetypes.guess_type(job.original_filename)
+
+        # Fallback to the stored file's name
         if not mime_type:
-            mime_type = "audio/wav"
+            mime_type, _ = mimetypes.guess_type(str(audio_path))
+
+        # As a last resort, avoid mislabeling non-WAV as WAV; fall back to
+        # generic binary if unknown. Consumers can still play if browser
+        # detects audio by content. Using 'application/octet-stream' is
+        # safer than forcing 'audio/wav' for unknown types.
+        if not mime_type:
+            mime_type = "application/octet-stream"
 
         # Return as inline content so browsers can stream in an <audio> element
-        headers = {"Content-Disposition": f'inline; filename="{audio_path.name}"'}
+        # Use the original filename in the Content-Disposition when available
+        disp_name = job.original_filename or audio_path.name
+        headers = {"Content-Disposition": f'inline; filename="{disp_name}"'}
         return FileResponse(path=str(audio_path), media_type=mime_type, headers=headers)
     finally:
         session.close()

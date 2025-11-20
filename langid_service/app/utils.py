@@ -17,8 +17,14 @@ def validate_upload(filename: str, size: int):
         raise ValueError(f"File extension '{ext}' not allowed")
 
 def move_to_storage(src: Path, job_id: str) -> Path:
-    dest = STORAGE_DIR / job_id
-    shutil.move(str(src), dest)
+    # Preserve the source file suffix (if any) when moving into storage so
+    # the stored filename retains a sensible extension (e.g. .mp3, .wav).
+    # This makes MIME-type detection via filename possible later.
+    suffix = src.suffix or ""
+    dest = STORAGE_DIR / f"{job_id}{suffix}"
+    # Ensure storage dir exists
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dest))
     return dest
 
 def truncate_to_words(text: str, max_words: int = 10) -> str:
