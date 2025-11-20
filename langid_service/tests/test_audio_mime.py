@@ -81,7 +81,6 @@ def test_audio_endpoint_reports_wrong_mime_for_unprefixed_file(monkeypatch, tmp_
 
     content_type = resp.headers.get("content-type", "")
 
-    # The bug is that the server may report audio/wav or application/octet-stream
-    # Here we assert that the Content-Type is NOT audio/mpeg to demonstrate the failure.
-    # If the server is correct, this assertion will fail (which is fine for our test-first approach).
-    assert content_type != "audio/mpeg", f"Expected failing case, but got audio/mpeg: {content_type}"
+    # After fixing the storage and MIME detection, the endpoint should
+    # return the correct audio MIME (audio/mpeg) for MP3 uploads.
+    assert content_type == "audio/mpeg", f"Expected audio/mpeg, got: {content_type}"
