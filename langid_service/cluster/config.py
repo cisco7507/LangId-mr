@@ -10,6 +10,9 @@ class ClusterConfig(BaseModel):
     nodes: Dict[str, str]
     health_check_interval_seconds: int = 5
     internal_request_timeout_seconds: int = 5
+    enable_round_robin: bool = False
+    rr_state_file: Optional[str] = None
+    rr_strategy: str = "global"  # "global" or "per-node"
 
 _config: Optional[ClusterConfig] = None
 

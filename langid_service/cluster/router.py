@@ -1,7 +1,7 @@
 
 import httpx
 import json
-from fastapi import HTTPException, Request, Response
+from fastapi import HTTPException, Request, Response, Query
 from typing import Tuple, Any, Optional, Dict
 from . import config as cluster_config
 
@@ -106,3 +106,38 @@ async def proxy_to_owner(
             status_code=503,
             media_type="application/json"
         )
+
+async def proxy_job_submission(
+    target_node: str,
+    file_content: bytes,
+    filename: str,
+    target_lang: Optional[str] = None
+) -> Response:
+    config = cluster_config.load_cluster_config()
+    base_url = cluster_config.get_node_url(target_node)
+    
+    if not base_url:
+        raise ValueError(f"Unknown target node: {target_node}")
+
+    target_url = f"{base_url.rstrip('/')}/jobs"
+    params = {"internal": "1"}
+    if target_lang:
+        params["target_lang"] = target_lang
+
+    # Prepare multipart upload
+    files = {"file": (filename, file_content)}
+    timeout = config.internal_request_timeout_seconds
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(
+            url=target_url,
+            params=params,
+            files=files
+        )
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=dict(resp.headers),
+            media_type=resp.headers.get("content-type")
+        )
+

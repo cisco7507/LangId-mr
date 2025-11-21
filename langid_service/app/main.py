@@ -7,8 +7,9 @@ except ImportError:  # Python < 3.11
 
     UTC = timezone.utc
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Response, Request
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Response, Query, Request
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 import mimetypes
 from pydantic import ValidationError
 from loguru import logger
@@ -26,10 +27,11 @@ from .worker.runner import work_once
 from .guards import ensure_allowed
 from .lang_gate import validate_language_strict
 from .services.audio_io import load_audio_mono_16k
-from ..cluster.config import get_self_name
-from ..cluster.router import is_local, proxy_to_owner
-from ..cluster.dashboard import aggregate_cluster_jobs
-from ..cluster.health import check_cluster_health
+from langid_service.cluster.config import get_self_name, get_nodes
+from langid_service.cluster.router import is_local, proxy_to_owner, proxy_job_submission
+from langid_service.cluster.scheduler import scheduler
+from langid_service.cluster.dashboard import aggregate_cluster_jobs
+from langid_service.cluster.health import check_cluster_health
 
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
@@ -269,13 +271,13 @@ def delete_jobs(payload: DeleteJobsRequest):
     finally:
         session.close()
 
-@app.post("/jobs", response_model=EnqueueResponse)
-async def submit_job(file: UploadFile = File(...), target_lang: Optional[str] = None):
+async def create_job_local(file: UploadFile, target_lang: Optional[str] = None) -> EnqueueResponse:
     # Validate target language
     if target_lang:
         ensure_allowed(target_lang)
 
     # Validate upload
+    # Note: file cursor should be at 0
     raw = await file.read()
     try:
         validate_upload(file.filename, len(raw))
@@ -313,6 +315,61 @@ async def submit_job(file: UploadFile = File(...), target_lang: Optional[str] = 
         session.close()
 
     return EnqueueResponse(job_id=job_id, status="queued")
+
+@app.post("/jobs", response_model=EnqueueResponse)
+async def submit_job(
+    file: UploadFile = File(...), 
+    target_lang: Optional[str] = None,
+    internal: Optional[str] = Query(None)
+):
+    if internal == "1":
+        return await create_job_local(file, target_lang)
+
+    # Round Robin Distribution
+    # Read file content once to reuse in proxy
+    file_content = await file.read()
+    await file.seek(0)
+    
+    max_attempts = len(get_nodes()) if get_nodes() else 1
+    attempts = 0
+    
+    while attempts < max_attempts:
+        target = await scheduler.next_target()
+        attempts += 1
+        
+        if target == get_self_name():
+            return await create_job_local(file, target_lang)
+        
+        try:
+            # Proxy to target
+            resp = await proxy_job_submission(
+                target_node=target,
+                file_content=file_content,
+                filename=file.filename,
+                target_lang=target_lang
+            )
+            
+            if resp.status_code in (200, 201, 202):
+                return EnqueueResponse(**json.loads(resp.body))
+            
+            # If 503, retry next node
+            if resp.status_code == 503:
+                continue
+                
+            # Propagate other errors
+            return Response(
+                content=resp.body,
+                status_code=resp.status_code,
+                headers=dict(resp.headers),
+                media_type=resp.headers.get("content-type")
+            )
+            
+        except Exception as e:
+            logger.warning(f"Failed to proxy job to {target}: {e}")
+            continue
+            
+    # Fallback to local if all else fails
+    return await create_job_local(file, target_lang)
 
 @app.post("/jobs/by-url", response_model=EnqueueResponse)
 async def submit_job_by_url(payload: SubmitByUrl, target_lang: Optional[str] = None):
