@@ -515,7 +515,9 @@ Returns the health status of all configured nodes by probing their `/health` end
     ```powershell
     $env:LANGID_CLUSTER_CONFIG_FILE="C:\LangID\cluster_config.json"
     cd C:\LangID
-    .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080
+    # Run from the parent directory of langid_service or ensure it is in PYTHONPATH
+    # It is recommended to run from the root of the repository/deployment
+    .\.venv\Scripts\python.exe -m uvicorn langid_service.app.main:app --host 0.0.0.0 --port 8080
     ```
 4.  **Start Node B & C:** Repeat step 3 on other nodes.
 5.  **Verify:**
