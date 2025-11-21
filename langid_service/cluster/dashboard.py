@@ -67,3 +67,32 @@ async def aggregate_cluster_jobs(
         "items": all_jobs,
         "nodes": nodes_summary
     }
+
+async def aggregate_cluster_metrics() -> Dict[str, Any]:
+    """
+    Fetches local metrics from all nodes and aggregates them.
+    """
+    from langid_service.metrics import prometheus as prom_metrics
+    
+    config = cluster_config.load_cluster_config()
+    nodes_map = config.nodes
+    
+    async def fetch_metrics(name: str, url: str):
+        target_url = f"{url.rstrip('/')}/cluster/local-metrics"
+        try:
+            async with httpx.AsyncClient(timeout=config.internal_request_timeout_seconds) as client:
+                resp = await client.get(target_url)
+                if resp.status_code == 200:
+                    return resp.json()
+        except Exception:
+            pass
+        return None
+
+    tasks = [fetch_metrics(name, url) for name, url in nodes_map.items()]
+    results = await asyncio.gather(*tasks)
+    
+    # Filter out None results
+    valid_results = [r for r in results if r is not None]
+    
+    # Use prometheus.py to aggregate
+    return prom_metrics.get_metrics_summary(valid_results)

@@ -141,12 +141,7 @@ def prometheus_metrics():
     data = generate_latest(REGISTRY)
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
-@app.get("/cluster/metrics-summary")
-def cluster_metrics_summary():
-    """
-    Return aggregated cluster metrics for the UI.
-    """
-    return prom_metrics.get_metrics_summary()
+
 
 
 @app.get("/metrics/json")
@@ -662,3 +657,18 @@ def health_check():
 @app.get("/cluster/nodes")
 async def get_cluster_nodes():
     return await check_cluster_health()
+
+@app.get("/cluster/local-metrics")
+def get_local_metrics_endpoint():
+    """
+    Internal endpoint to expose local metrics for aggregation.
+    """
+    return prom_metrics.get_local_metrics()
+
+@app.get("/cluster/metrics-summary")
+async def get_metrics_summary_endpoint():
+    """
+    Aggregated metrics summary for the UI.
+    """
+    from langid_service.cluster.dashboard import aggregate_cluster_metrics
+    return await aggregate_cluster_metrics()

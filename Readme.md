@@ -606,3 +606,67 @@ The dashboard aggregates data from the entire cluster.
 
 
 
+
+## L. Prometheus Metrics and Monitoring
+
+The service exposes Prometheus metrics at `/metrics`.
+
+### Key Metrics
+
+| Metric Name | Type | Labels | Description |
+|---|---|---|---|
+| `langid_jobs_submitted_total` | Counter | `ingress_node`, `target_node` | Total jobs submitted via POST /jobs |
+| `langid_jobs_owned_total` | Counter | `owner_node` | Total jobs owned/created locally |
+| `langid_jobs_active` | Gauge | `owner_node` | Number of currently active jobs |
+| `langid_node_up` | Gauge | `node` | Node up status (1=up, 0=down) |
+| `langid_node_last_health_timestamp_seconds` | Gauge | `node` | Timestamp of last successful health check |
+
+### Cluster Summary Endpoint
+
+For UI dashboards, a simplified JSON summary is available at `/cluster/metrics-summary`.
+
+**Example Response:**
+
+```json
+{
+  "nodes": [
+    {
+      "name": "node-a",
+      "up": true,
+      "jobs_owned_total": 120,
+      "jobs_active": 3,
+      "jobs_submitted_as_target": 80,
+      "last_health_ts": 1732231234.5
+    },
+    {
+      "name": "node-b",
+      "up": false,
+      "jobs_owned_total": 95,
+      "jobs_active": 0,
+      "jobs_submitted_as_target": 70,
+      "last_health_ts": 1732230000.0
+    }
+  ]
+}
+```
+
+### UI Integration
+
+The dashboard includes a "Cluster Health and Load" card that visualizes this data:
+
+```text
++---------------------------------------------------------------+
+| Cluster Health and Load                                       |
+|                                                               |
+| Node    Status   Owned   Active   Traffic       Last Health   |
+| node-a  [UP]       120        3   ======== 60%  12:34:56      |
+| node-b  [DOWN]      95        0   =====    40%  12:10:00      |
++---------------------------------------------------------------+
+```
+
+It shows:
+- Node status (UP/DOWN)
+- Active job counts
+- Total jobs processed
+- Load distribution
+
