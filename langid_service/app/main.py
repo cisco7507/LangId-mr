@@ -7,7 +7,7 @@ except ImportError:  # Python < 3.11
 
     UTC = timezone.utc
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Response
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Response, Request
 from fastapi.responses import JSONResponse, FileResponse
 import mimetypes
 from pydantic import ValidationError
@@ -26,6 +26,10 @@ from .worker.runner import work_once
 from .guards import ensure_allowed
 from .lang_gate import validate_language_strict
 from .services.audio_io import load_audio_mono_16k
+from ..cluster.config import get_self_name
+from ..cluster.router import is_local, proxy_to_owner
+from ..cluster.dashboard import aggregate_cluster_jobs
+from ..cluster.health import check_cluster_health
 
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
@@ -289,7 +293,7 @@ async def submit_job(file: UploadFile = File(...), target_lang: Optional[str] = 
         audio = load_audio_mono_16k(str(tmp_path))
         validate_language_strict(audio)
 
-    job_id = gen_uuid()
+    job_id = f"{get_self_name()}-{gen_uuid()}"
     stored = move_to_storage(tmp_path, job_id, original_filename=file.filename)
     logger.info(f"Enqueued upload for job {job_id}: {stored}")
 
@@ -318,7 +322,7 @@ async def submit_job_by_url(payload: SubmitByUrl, target_lang: Optional[str] = N
 
     # Simple URL fetch (no auth) — for production, prefer signed URLs or internal sources.
     import urllib.request
-    job_id = gen_uuid()
+    job_id = f"{get_self_name()}-{gen_uuid()}"
     tmp_file = Path(tempfile.gettempdir()) / f"{job_id}.wav"
 
     url = payload.url
@@ -368,7 +372,10 @@ async def submit_job_by_url(payload: SubmitByUrl, target_lang: Optional[str] = N
     logger.info(f"Enqueued URL for job {job_id}: {stored}")
     return EnqueueResponse(job_id=job_id, status="queued")
 @app.get("/jobs/{job_id}", response_model=JobStatusResponse)
-def get_status(job_id: str):
+async def get_status(job_id: str, request: Request):
+    if not is_local(job_id):
+        return await proxy_to_owner(job_id, "", request.method, request.query_params, headers=request.headers)
+
     session = SessionLocal()
     try:
         job = session.get(Job, job_id)
@@ -391,7 +398,10 @@ def get_status(job_id: str):
         session.close()
 
 @app.get("/jobs/{job_id}/result", response_model=ResultResponse)
-def get_result(job_id: str):
+async def get_result(job_id: str, request: Request):
+    if not is_local(job_id):
+        return await proxy_to_owner(job_id, "/result", request.method, request.query_params, headers=request.headers)
+
     session = SessionLocal()
     try:
         job = session.get(Job, job_id)
@@ -466,3 +476,82 @@ def get_job_audio(job_id: str):
         return FileResponse(path=str(audio_path), media_type=mime_type, headers=headers)
     finally:
         session.close()
+
+@app.delete("/jobs/{job_id}")
+async def delete_job(job_id: str, request: Request):
+    if not is_local(job_id):
+        return await proxy_to_owner(job_id, "", request.method, request.query_params, headers=request.headers)
+    
+    session = SessionLocal()
+    try:
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        # Delete storage
+        storage_root = STORAGE_DIR.resolve()
+        try:
+            pattern = f"{job.id}*"
+            for p in storage_root.glob(pattern):
+                if p.is_dir():
+                    shutil.rmtree(p)
+                else:
+                    p.unlink(missing_ok=True)
+        except Exception:
+            logger.exception(f"Error cleaning storage for {job.id}")
+
+        session.delete(job)
+        session.commit()
+        return {"status": "ok", "job_id": job_id}
+    finally:
+        session.close()
+
+@app.get("/admin/jobs")
+def get_admin_jobs(status: Optional[str] = None, since: Optional[str] = None):
+    session = SessionLocal()
+    try:
+        query = session.query(Job)
+        if status:
+            query = query.filter(Job.status == status)
+        if since:
+            # Parse ISO8601
+            try:
+                dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+                query = query.filter(Job.created_at >= dt)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid since format")
+        
+        jobs = query.all()
+        return {
+            "server": get_self_name(),
+            "jobs": [
+                {
+                    "job_id": job.id,
+                    "status": job.status.value,
+                    "created_at": job.created_at.isoformat() if job.created_at else None,
+                    "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+                    "language": (json.loads(job.result_json).get("language") if job.result_json else None),
+                    "probability": (json.loads(job.result_json).get("probability") if job.result_json else None),
+                }
+                for job in jobs
+            ]
+        }
+    finally:
+        session.close()
+
+@app.get("/cluster/jobs")
+async def get_cluster_jobs_endpoint(
+    request: Request,
+    status: Optional[str] = None, 
+    since: Optional[str] = None, 
+    limit: Optional[int] = None
+):
+    return await aggregate_cluster_jobs(status, since, limit)
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "node": get_self_name()}
+
+@app.get("/cluster/nodes")
+async def get_cluster_nodes():
+    return await check_cluster_health()
