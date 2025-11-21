@@ -8,7 +8,7 @@ except ImportError:  # Python < 3.11
     UTC = timezone.utc
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Response, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import mimetypes
 from pydantic import ValidationError
@@ -489,12 +489,15 @@ async def get_result(job_id: str, request: Request):
 
 
 @app.get("/jobs/{job_id}/audio")
-def get_job_audio(job_id: str):
+async def get_job_audio(job_id: str, request: Request):
     """Serve the original uploaded audio file for a job.
 
     This returns a `FileResponse` with an appropriate audio content-type.
     The dashboard uses this endpoint to embed an audio player.
     """
+    if not is_local(job_id):
+        return await proxy_to_owner(job_id, "/audio", request.method, request.query_params, headers=request.headers)
+
     session = SessionLocal()
     try:
         job = session.get(Job, job_id)
