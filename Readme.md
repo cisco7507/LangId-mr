@@ -664,21 +664,143 @@ The dashboard aggregates data from the entire cluster.
 
 ## L. Prometheus Metrics and Monitoring
 
-The service exposes Prometheus metrics at `/metrics`.
+The service exposes Prometheus metrics for monitoring cluster health, job processing, and load distribution.
 
-### Key Metrics
+### Metrics Endpoints
 
-| Metric Name | Type | Labels | Description |
-|---|---|---|---|
-| `langid_jobs_submitted_total` | Counter | `ingress_node`, `target_node` | Total jobs submitted via POST /jobs |
-| `langid_jobs_owned_total` | Counter | `owner_node` | Total jobs owned/created locally |
-| `langid_jobs_active` | Gauge | `owner_node` | Number of currently active jobs |
-| `langid_node_up` | Gauge | `node` | Node up status (1=up, 0=down) |
-| `langid_node_last_health_timestamp_seconds` | Gauge | `node` | Timestamp of last successful health check |
+| Endpoint | Format | Description |
+|----------|--------|-------------|
+| `/metrics` | Prometheus | Standard Prometheus scrape endpoint with all metrics |
+| `/metrics/json` | JSON | JSON representation of Prometheus metrics for debugging |
+| `/cluster/local-metrics` | JSON | Raw local metrics state for aggregation |
+| `/cluster/metrics-summary` | JSON | Aggregated cluster-wide summary for dashboards |
+
+### Available Metrics
+
+#### 1. `langid_jobs_submitted_total`
+- **Type:** Counter
+- **Labels:** `ingress_node`, `target_node`
+- **Description:** Total number of jobs submitted via `POST /jobs`. Tracks the flow of job submissions across the cluster.
+
+**Use Cases:**
+- Monitor total job submission rate across the cluster
+- Identify load distribution patterns (which nodes are receiving vs. processing jobs)
+- Detect imbalanced traffic patterns
+
+**Example Query:**
+```promql
+# Total jobs submitted by any ingress to any target
+sum(langid_jobs_submitted_total)
+
+# Jobs submitted to a specific target node
+sum(langid_jobs_submitted_total{target_node="node-a"})
+
+# Jobs submitted through a specific ingress
+sum(langid_jobs_submitted_total{ingress_node="node-b"})
+
+# Rate of job submissions per second
+rate(langid_jobs_submitted_total[5m])
+```
+
+#### 2. `langid_jobs_owned_total`
+- **Type:** Counter
+- **Labels:** `owner_node`
+- **Description:** Total number of jobs created/owned by each node. This increments when a node creates a job locally (either directly or via proxied request).
+
+**Use Cases:**
+- Monitor which nodes are processing the most jobs
+- Verify round-robin distribution is working correctly
+- Track cumulative workload per node
+
+**Example Query:**
+```promql
+# Total jobs owned by each node
+langid_jobs_owned_total
+
+# Jobs owned by a specific node
+langid_jobs_owned_total{owner_node="node-a"}
+
+# Rate of new jobs owned per second
+rate(langid_jobs_owned_total[5m])
+```
+
+#### 3. `langid_jobs_active`
+- **Type:** Gauge
+- **Labels:** `owner_node`
+- **Description:** Current number of active (queued or running) jobs on each node. This gauge increments when a job is created and decrements when it completes or fails.
+
+**Use Cases:**
+- Monitor current load on each node
+- Identify bottlenecks or stuck jobs
+- Alert on queue depth thresholds
+- Capacity planning
+
+**Example Query:**
+```promql
+# Current active jobs on all nodes
+sum(langid_jobs_active)
+
+# Active jobs on a specific node
+langid_jobs_active{owner_node="node-a"}
+
+# Alert if any node has too many active jobs
+langid_jobs_active > 100
+```
+
+#### 4. `langid_node_up`
+- **Type:** Gauge
+- **Labels:** `node`
+- **Description:** Health status of each node in the cluster. Value is `1` if the node is reachable and healthy, `0` if down or unreachable.
+
+**Use Cases:**
+- Monitor cluster availability
+- Alert on node failures
+- Track uptime percentage
+- Visualize cluster topology
+
+**Example Query:**
+```promql
+# All nodes that are currently up
+langid_node_up == 1
+
+# All nodes that are down
+langid_node_up == 0
+
+# Number of healthy nodes
+sum(langid_node_up)
+
+# Uptime percentage over 24 hours
+avg_over_time(langid_node_up[24h]) * 100
+```
+
+#### 5. `langid_node_last_health_timestamp_seconds`
+- **Type:** Gauge
+- **Labels:** `node`
+- **Description:** Unix timestamp (in seconds) of the last successful health check for each node. Updated by the background health check loop.
+
+**Use Cases:**
+- Detect stale health checks
+- Monitor health check frequency
+- Alert on nodes that haven't been seen recently
+- Calculate time since last contact
+
+**Example Query:**
+```promql
+# Time since last health check (in seconds)
+time() - langid_node_last_health_timestamp_seconds
+
+# Alert if node hasn't been seen in 60 seconds
+(time() - langid_node_last_health_timestamp_seconds) > 60
+
+# Nodes last seen in the past minute
+langid_node_last_health_timestamp_seconds > (time() - 60)
+```
 
 ### Cluster Summary Endpoint
 
 For UI dashboards, a simplified JSON summary is available at `/cluster/metrics-summary`.
+
+This endpoint aggregates metrics from all reachable nodes and provides a consolidated view.
 
 **Example Response:**
 
@@ -705,9 +827,17 @@ For UI dashboards, a simplified JSON summary is available at `/cluster/metrics-s
 }
 ```
 
+**Field Descriptions:**
+- `name`: Node identifier (from cluster config)
+- `up`: Boolean indicating if node is currently reachable
+- `jobs_owned_total`: Cumulative jobs created by this node
+- `jobs_active`: Current number of queued/running jobs on this node
+- `jobs_submitted_as_target`: Total jobs that were routed to this node by the scheduler
+- `last_health_ts`: Unix timestamp of last successful health check (null if never seen)
+
 ### UI Integration
 
-The dashboard includes a "Cluster Health and Load" card that visualizes this data:
+The dashboard includes a "Cluster Health and Load" card that visualizes metrics data:
 
 ```text
 +---------------------------------------------------------------+
@@ -719,11 +849,92 @@ The dashboard includes a "Cluster Health and Load" card that visualizes this dat
 +---------------------------------------------------------------+
 ```
 
-It shows:
-- Node status (UP/DOWN)
-- Active job counts
-- Total jobs processed
-- Load distribution
+**Dashboard Features:**
+- **Node Status:** Real-time UP/DOWN indicators with color coding
+- **Active Jobs:** Current queue depth per node
+- **Total Jobs Processed:** Cumulative owned jobs
+- **Load Distribution:** Visual bar showing percentage of traffic each node receives
+- **Last Health:** Human-readable timestamp of last contact
+
+### Monitoring Best Practices
+
+**Recommended Alerts:**
+
+```yaml
+groups:
+  - name: langid_cluster
+    rules:
+      # Alert if any node is down
+      - alert: LangIDNodeDown
+        expr: langid_node_up == 0
+        for: 1m
+        annotations:
+          summary: "LangID node {{ $labels.node }} is down"
+      
+      # Alert if queue depth is high
+      - alert: LangIDHighQueueDepth
+        expr: langid_jobs_active > 50
+        for: 5m
+        annotations:
+          summary: "Node {{ $labels.owner_node }} has {{ $value }} active jobs"
+      
+      # Alert if health check is stale
+      - alert: LangIDStaleHealthCheck
+        expr: (time() - langid_node_last_health_timestamp_seconds) > 120
+        for: 2m
+        annotations:
+          summary: "Node {{ $labels.node }} health check is stale"
+      
+      # Alert if job submission rate drops to zero
+      - alert: LangIDNoJobSubmissions
+        expr: rate(langid_jobs_submitted_total[10m]) == 0
+        for: 10m
+        annotations:
+          summary: "No jobs submitted to cluster in 10 minutes"
+```
+
+**Grafana Dashboard Queries:**
+
+```promql
+# Job submission rate (jobs/sec) over time
+rate(langid_jobs_submitted_total[5m])
+
+# Job completion rate (jobs/sec)
+rate(langid_jobs_owned_total[5m]) - rate(langid_jobs_active[5m])
+
+# Cluster-wide active jobs
+sum(langid_jobs_active)
+
+# Per-node load distribution (percentage)
+sum by (target_node) (langid_jobs_submitted_total) 
+  / ignoring(target_node) group_left
+  sum(langid_jobs_submitted_total) * 100
+
+# Node availability percentage (24h)
+avg_over_time(langid_node_up[24h]) * 100
+```
+
+### Viewing Metrics
+
+**Prometheus Format:**
+```bash
+curl http://localhost:8080/metrics
+```
+
+**JSON Format (for debugging):**
+```bash
+curl http://localhost:8080/metrics/json
+```
+
+**Cluster Summary (for dashboards):**
+```bash
+curl http://localhost:8080/cluster/metrics-summary
+```
+
+**Local Node Metrics (internal use):**
+```bash
+curl http://localhost:8080/cluster/local-metrics
+```
 
 
 ## M. Language Code Configuration
