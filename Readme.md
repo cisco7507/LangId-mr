@@ -342,44 +342,40 @@ The LangID HA cluster is a fully distributed, shared-nothing architecture where 
 **Cluster Diagram (Load Distribution):**
 
 ```mermaid
-flowchart TD
-    Client["Client / UI"]
+flowchart TB
+    Client[Client / UI]
     
-    subgraph Cluster [LangID Cluster]
-        NodeA["Node A (Ingress)"]
-        NodeB["Node B (Target)"]
-        NodeC["Node C"]
-        
-        NodeA --"1. Pick Target (RR)"--> NodeA
-        NodeA --"2. Proxy POST /jobs"--> NodeB
-        NodeB --"3. Create Job"--> NodeB
+    subgraph Cluster[LangID Cluster]
+        direction TB
+        NodeA[Node A - Ingress]
+        NodeB[Node B - Target]
+        NodeC[Node C]
     end
     
-    Client -->|POST /jobs| NodeA
-    NodeB --"4. Respond (node-b-123)"--> NodeA
-    NodeA --"5. Respond"--> Client
+    Client -->|1. POST /jobs| NodeA
+    NodeA -->|2. Proxy to Target| NodeB
+    NodeB -->|3. Create Job| NodeB
+    NodeB -->|4. Return job-id| NodeA
+    NodeA -->|5. Return job-id| Client
 ```
 
 **Cluster Diagram (Read/Status Flow):**
 
 ```mermaid
-flowchart TD
-    Client["Client / UI"]
+flowchart TB
+    Client[Client / UI]
     
-    subgraph Cluster [LangID Cluster]
-        NodeA["Node A (Owner)"]
-        NodeB["Node B"]
-        NodeC["Node C"]
-        
-        NodeA <-->|Health/Proxy| NodeB
-        NodeB <-->|Health/Proxy| NodeC
-        NodeA <-->|Health/Proxy| NodeC
+    subgraph Cluster[LangID Cluster]
+        direction LR
+        NodeA[Node A - Owner]
+        NodeB[Node B - Ingress]
+        NodeC[Node C]
     end
     
-    Client -->|Request Job A-123| NodeB
-    NodeB --"Proxy (internal=1)"--> NodeA
-    NodeA --"Response"--> NodeB
-    NodeB --"Response"--> Client
+    Client -->|1. GET /jobs/node-a-123| NodeB
+    NodeB -->|2. Proxy to Owner| NodeA
+    NodeA -->|3. Return Job Data| NodeB
+    NodeB -->|4. Return Job Data| Client
 ```
 
 ### 2. Cluster Configuration
@@ -669,4 +665,24 @@ It shows:
 - Active job counts
 - Total jobs processed
 - Load distribution
+
+
+## M. Language Code Configuration
+
+You can configure the format of language codes returned by the API and displayed in the dashboard using the `LANG_CODE_FORMAT` environment variable.
+
+Supported values:
+- `iso639-1` (default): 2-letter codes (e.g., "en", "fr")
+- `iso639-2b`: 3-letter bibliographic codes (e.g., "eng", "fre")
+- `iso639-2t`: 3-letter terminologic codes (e.g., "eng", "fra")
+- `iso639-3`: 3-letter codes (e.g., "eng", "fra")
+
+**Example (.env):**
+```bash
+LANG_CODE_FORMAT=iso639-3
+```
+
+**Effect:**
+- **API Responses:** `language` field will contain "eng" or "fra".
+- **Dashboard:** Job list will show "eng (English)" or "fra (French)".
 
