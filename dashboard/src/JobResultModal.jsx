@@ -29,6 +29,7 @@ export default function JobResultModal({ jobResult, onClose }) {
   const derived = useMemo(() => {
     if (!result) return null;
     const language = result.language ?? "unknown";
+    const languageLabel = result.language_label ?? null;
     const probability = typeof result.probability === "number" ? result.probability : null;
     const processingMs = result.processing_ms;
     const transcript = result.transcript_snippet;
@@ -40,7 +41,7 @@ export default function JobResultModal({ jobResult, onClose }) {
       raw?.lang_gate?.method ??
       null;
     const langGate = raw?.lang_gate ?? null;
-    return { language, probability, processingMs, transcript, raw, originalFilename, detectionMethod, langGate };
+    return { language, languageLabel, probability, processingMs, transcript, raw, originalFilename, detectionMethod, langGate };
   }, [result]);
 
   // Fetch result when a (new) job arrives
@@ -103,7 +104,7 @@ export default function JobResultModal({ jobResult, onClose }) {
   const title = error ? "Job Result (Error)" : "Job Result";
 
   const languageBadge = derived && (
-    <LanguageBadge language={derived.language} />
+    <LanguageBadge language={derived.language} label={derived.languageLabel} />
   );
 
   return (
@@ -336,22 +337,24 @@ export default function JobResultModal({ jobResult, onClose }) {
   );
 }
 
-function LanguageBadge({ language }) {
-  let label = "Unknown";
+function LanguageBadge({ language, label }) {
+  let displayLabel = label || "Unknown";
   let classes = "bg-slate-100 text-slate-800";
 
-  if (language === "en") {
-    label = "English";
+  // Simple heuristic for styling based on label or code
+  const lowerLang = (language || "").toLowerCase();
+  const lowerLabel = (label || "").toLowerCase();
+
+  if (lowerLang.startsWith("en") || lowerLabel.includes("english")) {
     classes = "bg-emerald-100 text-emerald-800 border border-emerald-200";
-  } else if (language === "fr") {
-    label = "French";
+  } else if (lowerLang.startsWith("fr") || lowerLabel.includes("french")) {
     classes = "bg-sky-100 text-sky-800 border border-sky-200";
   }
 
   return (
     <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${classes}`}>
       <span className="mr-1 inline-block h-2 w-2 rounded-full bg-current" />
-      {label}
+      {language} {label ? `(${label})` : ""}
     </span>
   );
 }

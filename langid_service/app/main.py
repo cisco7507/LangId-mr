@@ -32,6 +32,8 @@ from langid_service.cluster.router import is_local, proxy_to_owner, proxy_job_su
 from langid_service.cluster.scheduler import scheduler
 from langid_service.cluster.dashboard import aggregate_cluster_jobs
 from langid_service.cluster.health import check_cluster_health
+from .models.languages import to_iso_code, get_language_label, from_iso_code
+from .config import LANG_CODE_FORMAT
 
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
@@ -242,7 +244,8 @@ def get_jobs():
             attempts=job.attempts,
             filename=Path(job.input_path).name if job.input_path else None,
             original_filename=job.original_filename,
-            language=(json.loads(job.result_json).get("language") if job.result_json else None),
+            language=to_iso_code(json.loads(job.result_json).get("language"), LANG_CODE_FORMAT) if job.result_json else None,
+            language_label=get_language_label(json.loads(job.result_json).get("language")) if job.result_json else None,
             probability=(json.loads(job.result_json).get("probability") if job.result_json else None),
             error=job.error,
         ) for job in jobs])
@@ -304,6 +307,10 @@ from langid_service.metrics import prometheus as prom_metrics
 async def create_job_local(file: UploadFile, target_lang: Optional[str] = None) -> EnqueueResponse:
     # Validate target language
     if target_lang:
+        canonical = from_iso_code(target_lang, LANG_CODE_FORMAT)
+        if not canonical:
+            raise HTTPException(status_code=400, detail=f"Invalid language code '{target_lang}' for format {LANG_CODE_FORMAT.value}")
+        target_lang = canonical
         ensure_allowed(target_lang)
 
     # Validate upload
@@ -489,7 +496,8 @@ async def get_status(job_id: str, request: Request):
             attempts=job.attempts,
             filename=Path(job.input_path).name if job.input_path else None,
             original_filename=job.original_filename,
-            language=(json.loads(job.result_json).get("language") if job.result_json else None),
+            language=to_iso_code(json.loads(job.result_json).get("language"), LANG_CODE_FORMAT) if job.result_json else None,
+            language_label=get_language_label(json.loads(job.result_json).get("language")) if job.result_json else None,
             probability=(json.loads(job.result_json).get("probability") if job.result_json else None),
             error=job.error,
         )
@@ -513,18 +521,39 @@ async def get_result(job_id: str, request: Request):
         # We'll use this for the top-level snippet.
         transcript_snippet = raw.get("text")
 
+        # Format language codes in the raw field recursively
+        def format_lang_codes(obj):
+            """Recursively format language codes in nested structures."""
+            if isinstance(obj, dict):
+                result = {}
+                for key, value in obj.items():
+                    if key == "language" and isinstance(value, str):
+                        # Format language code
+                        result[key] = to_iso_code(value, LANG_CODE_FORMAT)
+                    else:
+                        # Recurse into nested structures
+                        result[key] = format_lang_codes(value)
+                return result
+            elif isinstance(obj, list):
+                return [format_lang_codes(item) for item in obj]
+            else:
+                return obj
+        
+        formatted_raw = format_lang_codes(raw)
+
         return ResultResponse(
             job_id=job.id,
-            language=raw.get("language", "unknown"),
+            language=to_iso_code(raw.get("language", "unknown"), LANG_CODE_FORMAT),
+            language_label=get_language_label(raw.get("language", "unknown")),
             probability=raw.get("probability", 0.0), # Note: worker doesn't set this field
             detection_method=raw.get("detection_method"),
             gate_decision=raw.get("gate_decision"),
-            gate_meta=raw.get("gate_meta"),
+            gate_meta=format_lang_codes(raw.get("gate_meta")),
             music_only=raw.get("music_only", False),
             transcript_snippet=transcript_snippet,
             processing_ms=raw.get("processing_ms", 0),
             original_filename=job.original_filename,
-            raw=raw,
+            raw=formatted_raw,
         )
     finally:
         session.close()
@@ -632,7 +661,8 @@ def get_admin_jobs(status: Optional[str] = None, since: Optional[str] = None):
                     "status": job.status.value,
                     "created_at": job.created_at.isoformat() if job.created_at else None,
                     "updated_at": job.updated_at.isoformat() if job.updated_at else None,
-                    "language": (json.loads(job.result_json).get("language") if job.result_json else None),
+                    "language": (to_iso_code(json.loads(job.result_json).get("language"), LANG_CODE_FORMAT) if job.result_json else None),
+                    "language_label": (get_language_label(json.loads(job.result_json).get("language")) if job.result_json else None),
                     "probability": (json.loads(job.result_json).get("probability") if job.result_json else None),
                 }
                 for job in jobs

@@ -16,12 +16,14 @@ class JobStatusResponse(BaseModel):
     filename: Optional[str] = None
     original_filename: Optional[str] = None
     language: Optional[str] = None
+    language_label: Optional[str] = None
     probability: Optional[float] = None
     error: Optional[str] = None
 
 class ResultResponse(BaseModel):
     job_id: str
     language: str
+    language_label: Optional[str] = None
     probability: float
     detection_method: Optional[str] = None
     gate_decision: Optional[str] = None
