@@ -92,12 +92,31 @@ def start_workers():
         worker_processes.append(p)
     logger.info(f"Started {len(worker_processes)} worker processes")
 
+import asyncio
+from langid_service.cluster.config import load_cluster_config
+
+# ...
+
+async def health_check_loop():
+    logger.info("Starting health check loop")
+    while True:
+        try:
+            config = load_cluster_config()
+            await check_cluster_health()
+            await asyncio.sleep(config.health_check_interval_seconds)
+        except Exception as e:
+            logger.error(f"Health check loop error: {e}")
+            await asyncio.sleep(5)
+
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
     start_workers()
     # Initial node status
     prom_metrics.set_node_up(get_self_name(), 1)
     prom_metrics.set_node_last_health_timestamp(get_self_name(), datetime.now(UTC).timestamp())
+    
+    # Start health check loop
+    asyncio.create_task(health_check_loop())
 
 @app.on_event("shutdown")
 def on_shutdown():
