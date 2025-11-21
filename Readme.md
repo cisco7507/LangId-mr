@@ -328,12 +328,12 @@ The LangID HA cluster is a fully distributed, shared-nothing architecture where 
 
 ```mermaid
 flowchart TD
-    Client[Client / UI]
+    Client["Client / UI"]
     
     subgraph Cluster [LangID Cluster]
-        NodeA[Node A (Owner)]
-        NodeB[Node B]
-        NodeC[Node C]
+        NodeA["Node A (Owner)"]
+        NodeB["Node B"]
+        NodeC["Node C"]
         
         NodeA <-->|Health/Proxy| NodeB
         NodeB <-->|Health/Proxy| NodeC
