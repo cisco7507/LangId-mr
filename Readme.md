@@ -15,6 +15,19 @@ The LangID Service is a high-performance, multithreaded microservice designed fo
 
 # LangID Service — Unified README
 
+## Table of Contents
+- [A. Overview](#a-overview)
+- [B. Architecture](#b-architecture)
+- [C. Full EN/FR Gate Pipeline](#c-full-enfr-gate-pipeline)
+- [D. Whisper Model + GPU Details](#d-whisper-model--gpu-details)
+- [E. Worker System](#e-worker-system)
+- [F. Configuration (.env)](#f-configuration-env)
+- [G. API Reference](#g-api-reference)
+- [H. Storage + DB Layout](#h-storage--db-layout)
+- [I. Installation & Running](#i-installation--running)
+- [J. Examples](#j-examples)
+- [K. Internal HA Cluster Architecture](#k-internal-ha-cluster-architecture)
+
 ## A. Overview
 
 The LangID Service is a backend microservice that performs English vs French language detection and optional transcription for audio files. The service accepts audio via file upload or URL, runs a short probe autodetection pass using Whisper, applies a conservative EN/FR gate (including a music-only detector), optionally retries detection with a VAD-trimmed probe, and produces a structured JSON result persisted with the job record.
@@ -309,6 +322,7 @@ To improve concurrency when multiple worker processes update the jobs table:
 
 - Use structured logs in `LOG_DIR` and expose Prometheus metrics for monitoring.
 
+
 ## K. Internal HA Cluster Architecture
 
 This section details the internal High Availability (HA) cluster architecture designed for Windows Server deployments where external load balancers are not available.
@@ -319,12 +333,34 @@ The LangID HA cluster is a fully distributed, shared-nothing architecture where 
 
 **Key Concepts:**
 - **No External Load Balancer:** The cluster does not rely on F5, NGINX, or Kubernetes Ingress.
+- **Internal Load Distribution:** An internal round-robin scheduler distributes new job submissions across all healthy nodes.
 - **Symmetric Nodes:** Each node runs the identical FastAPI service and worker logic.
 - **Deterministic Routing:** Job ownership is determined by the job ID prefix.
 - **Internal Proxying:** Any node can accept a request for any job; if the job belongs to another node, the request is transparently proxied internally.
 - **Distributed Dashboard:** Cluster-wide status and job history are aggregated on-demand from all reachable nodes.
 
-**Cluster Diagram:**
+**Cluster Diagram (Load Distribution):**
+
+```mermaid
+flowchart TD
+    Client["Client / UI"]
+    
+    subgraph Cluster [LangID Cluster]
+        NodeA["Node A (Ingress)"]
+        NodeB["Node B (Target)"]
+        NodeC["Node C"]
+        
+        NodeA --"1. Pick Target (RR)"--> NodeA
+        NodeA --"2. Proxy POST /jobs"--> NodeB
+        NodeB --"3. Create Job"--> NodeB
+    end
+    
+    Client -->|POST /jobs| NodeA
+    NodeB --"4. Respond (node-b-123)"--> NodeA
+    NodeA --"5. Respond"--> Client
+```
+
+**Cluster Diagram (Read/Status Flow):**
 
 ```mermaid
 flowchart TD
@@ -361,156 +397,144 @@ Each node is configured via a JSON file specified by the `LANGID_CLUSTER_CONFIG_
     "node-c": "http://node-c.internal:8080"
   },
   "health_check_interval_seconds": 5,
-  "internal_request_timeout_seconds": 5
+  "internal_request_timeout_seconds": 5,
+  "enable_round_robin": true,
+  "rr_state_file": "/tmp/langid_rr_state.json",
+  "rr_strategy": "global"
 }
 ```
 
 **Configuration Reference:**
 
-| Field | Type | Description | Example |
-|---|---|---|---|
-| `self_name` | string | The unique identifier for this node. Must exist in `nodes`. | `"node-a"` |
-| `nodes` | dict | Map of node names to their base URLs (http/https). | `{"node-a": "..."}` |
-| `health_check_interval_seconds` | int | Interval for background health probes (if enabled). | `5` |
-| `internal_request_timeout_seconds` | int | Timeout for internal proxy requests. | `5` |
-
-**Requirements:**
-1.  **Consistency:** All nodes should have the same `nodes` list.
-2.  **Reachability:** The URLs in `nodes` must be resolvable and reachable from every other node.
-3.  **Identity:** `self_name` must match the key in `nodes` corresponding to the local instance.
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `self_name` | string | **Required.** Unique identifier for this node (e.g., "node-a"). Must match a key in `nodes`. |
+| `nodes` | dict | **Required.** Map of `node_name` -> `base_url`. Defines the cluster membership. |
+| `health_check_interval_seconds` | int | Interval for background health checks (default: 30). |
+| `internal_request_timeout_seconds` | int | Timeout for inter-node proxy requests (default: 10). |
+| `enable_round_robin` | bool | Enable internal load distribution (default: false). |
+| `rr_state_file` | string | (Optional) Path to persist the last-used round-robin index across restarts. |
+| `rr_strategy` | string | "global" (all nodes share sequence) or "per-node" (independent rotation). Default: "global". |
 
 ### 3. Job ID Prefixing & Ownership
 
-To ensure stateless clients can interact with any node, job IDs encode their ownership.
+Job IDs are globally unique and encode the owner node's identity.
 
-**Format:** `<node-name>-<uuid>`
-
-**Examples:**
-- `node-a-7b22c3f1-88a1-4098-9923-0192837465` (Owned by **node-a**)
-- `node-c-9012af99-1234-5678-9012-3456789012` (Owned by **node-c**)
-
-**Logic:**
-- **Generation:** When `POST /jobs` is called on `node-a`, it generates an ID starting with `node-a-`.
-- **Parsing:** `parse_job_owner(job_id)` extracts the prefix (everything before the first dash).
-- **Locality:** `is_local(job_id)` returns `True` if the prefix matches `self_name`.
-
-**Error Handling:**
-- If a job ID has an unknown prefix (not in `nodes`), the request fails with 400 Bad Request.
-- If a job ID is malformed (no dash), it raises a validation error.
+*   **Format:** `<node-name>-<uuid>`
+*   **Example:** `node-a-550e8400-e29b-41d4-a716-446655440000`
+*   **Logic:**
+    *   When a node creates a job (locally or via proxy), it **must** prefix the ID with its own `self_name`.
+    *   Any node receiving a request for a job ID parses the prefix to determine the owner.
 
 ### 4. Internal Request Routing & Proxy
 
-The internal router intercepts requests to job-specific endpoints.
+The router intercepts requests to job-specific endpoints (`/jobs/{id}`, `/jobs/{id}/result`, `DELETE /jobs/{id}`).
 
-**Proxy Logic:**
-1.  **Check Ownership:** Determine owner from job ID.
-2.  **Is Local?**
-    *   **Yes:** Handle request locally (DB lookup, file access).
-    *   **No:** Proxy request to owner node.
+**Routing Logic:**
+1.  **Parse ID:** Extract `owner_node` from `job_id`.
+2.  **Check Locality:**
+    *   If `owner_node == self_name`: Handle request locally.
+    *   If `owner_node != self_name`: Proxy request to `owner_node`.
 3.  **Proxying:**
-    *   Look up owner's URL from config.
-    *   Forward request (Method, Body, Headers) using `httpx`.
-    *   Append `?internal=1` to query params to prevent infinite recursion loops.
-    *   Return owner's response exactly as received.
+    *   Uses `httpx.AsyncClient`.
+    *   Appends `?internal=1` to query params to prevent infinite recursion loops.
+    *   Forwards method, headers (excluding host), and body.
+    *   **Timeout:** Returns `503 Service Unavailable` if the owner node is unreachable or times out.
 
-**Proxied Endpoints:**
-- `GET /jobs/{job_id}`
-- `GET /jobs/{job_id}/result`
-- `DELETE /jobs/{job_id}`
+**Proxy Failure Strategy:**
+- If the **Target Node** for a new job (`POST /jobs`) is unreachable, the Ingress Node will **retry with the next healthy node** in the rotation.
+- If an **Owner Node** for an existing job is unreachable, the request fails with `503`.
 
-**Failure Response:**
-If the owner node is down or times out, the proxy returns:
-```json
-HTTP 503 Service Unavailable
-{
-  "error": "owner_node_unreachable",
-  "owner": "node-b"
-}
+### 5. Round-Robin Load Distribution
+
+The cluster implements an **Internal Round-Robin Scheduler** to distribute load without an external balancer.
+
+#### Scheduler Behavior
+- **Deterministic Rotation:** The scheduler cycles through the list of nodes (sorted alphabetically by name) in a predictable order.
+- **Ingress Agnostic:** A client can send `POST /jobs` to *any* node. That node (the "Ingress Node") is responsible for assigning the job to a target node.
+- **Health Awareness:** If a target node is detected as unhealthy (via background health checks), the scheduler temporarily skips it and picks the next healthy node.
+- **Persistence:** If `rr_state_file` is configured, the current rotation index is saved to disk, ensuring distribution continuity across service restarts.
+
+#### Job Creation Flow (`POST /jobs`)
+
+1.  **Client Request:** Client sends `POST /jobs` to `Node A`.
+2.  **Target Selection:** `Node A`'s scheduler calculates the next target (e.g., `Node B`).
+3.  **Local vs. Remote:**
+    *   If **Target == Self**: `Node A` creates the job locally.
+    *   If **Target != Self**: `Node A` proxies the request to `Node B` with `?internal=1`.
+4.  **Execution:** `Node B` creates the job, assigning ID `node-b-<uuid>`.
+5.  **Response:** `Node B` responds to `Node A`, which forwards the response to the Client.
+
+**Sequence Diagram:**
+
+```
+Client       Node A (Ingress)      Node B (Target)
+  |                 |                     |
+  |--- POST /jobs ->|                     |
+  |                 |-- Next Target?      |
+  |                 |   (Node B)          |
+  |                 |                     |
+  |                 |--- POST /jobs ----->|
+  |                 |   (internal=1)      |
+  |                 |                     |
+  |                 |                     |-- Create Job --|
+  |                 |                     | ID: node-b-123 |
+  |                 |                     |----------------|
+  |                 |                     |
+  |                 |<-- 200 OK ----------|
+  |                 |   (node-b-123)      |
+  |<-- 200 OK ------|                     |
+  |   (node-b-123)  |                     |
 ```
 
-**Request Flow Example:**
-`UI` -> `node-b` (GET /jobs/node-a-123) -> `node-b` sees owner is `node-a` -> `node-b` proxies to `node-a` -> `node-a` returns JSON -> `node-b` returns JSON to UI.
+### 6. Local Admin Endpoints
 
-### 5. Local Admin Endpoints
+To support cluster management and the dashboard, nodes expose "local-only" endpoints.
 
-Each node exposes an admin endpoint to list *only* its local jobs. This is primarily used by the cluster aggregator.
+*   `GET /admin/jobs`: Returns **only** jobs stored on this specific node.
+    *   **Note:** Round-robin distribution does not affect this. Jobs are always owned by the node that executed them.
+    *   Supports filtering by `status` (queued, processing, completed, failed) and `since` (timestamp).
 
-**Endpoint:** `GET /admin/jobs`
+### 7. Cluster-Wide Dashboard
 
-**Parameters:**
-- `status` (optional): Filter by job status (e.g., `queued`, `succeeded`).
-- `since` (optional): ISO8601 timestamp to filter jobs created after a specific time.
+The dashboard aggregates data from the entire cluster.
 
-**Response:**
-```json
-{
-  "server": "node-a",
-  "jobs": [
+*   `GET /cluster/jobs`:
+    1.  **Fan-out:** Sends parallel async requests to `GET /admin/jobs` on **all** nodes defined in config.
+    2.  **Aggregate:** Collects all jobs into a single list.
+    3.  **Sort:** Sorts by `created_at` descending.
+    4.  **Status Report:** Includes a summary of which nodes were reachable.
+
+*   **Response Structure:**
+    ```json
     {
-      "job_id": "node-a-123...",
-      "status": "succeeded",
-      "created_at": "2023-10-27T10:00:00Z",
-      "language": "en",
-      "probability": 0.99
+      "items": [ ... mixed jobs from all nodes ... ],
+      "nodes": [
+        { "name": "node-a", "reachable": true, "job_count": 12 },
+        { "name": "node-b", "reachable": false, "job_count": 0 }
+      ]
     }
-  ]
-}
-```
+    ```
 
-### 6. Cluster-Wide Dashboard
+### 8. Cluster Health & Node Status
 
-The cluster dashboard endpoint provides a unified view of the entire system.
+*   `GET /health`: Returns `{ "status": "ok", "node": "node-a" }`. Used for internal checks.
+*   `GET /cluster/nodes`: Returns the health status of all nodes in the cluster.
+    *   Probes each node's `/health` endpoint.
+    *   Returns `last_seen` timestamp for each node.
+    *   Used by the Load Distribution Engine to skip unhealthy nodes.
 
-**Endpoint:** `GET /cluster/jobs`
-
-**Behavior:**
-1.  **Fan-out:** The receiving node sends parallel async requests to `GET /admin/jobs` on *every* node in the cluster configuration (including itself).
-2.  **Aggregation:** It collects all job lists.
-3.  **Sorting:** Merged list is sorted by `created_at` descending.
-4.  **Status Reporting:** It reports which nodes were reachable.
-
-**Response:**
-```json
-{
-  "items": [
-    { "job_id": "node-b-2", "status": "running", ... },
-    { "job_id": "node-a-1", "status": "succeeded", ... }
-  ],
-  "nodes": [
-    { "name": "node-a", "reachable": true, "job_count": 1 },
-    { "name": "node-b", "reachable": true, "job_count": 1 },
-    { "name": "node-c", "reachable": false, "job_count": 0 }
-  ]
-}
-```
-
-### 7. Health & Cluster Status
-
-**Endpoint:** `GET /cluster/nodes`
-
-Returns the health status of all configured nodes by probing their `/health` endpoints.
-
-**Response:**
-```json
-[
-  { "name": "node-a", "status": "up", "last_seen": "2023-10-27T10:05:00Z" },
-  { "name": "node-b", "status": "up", "last_seen": "2023-10-27T10:05:00Z" },
-  { "name": "node-c", "status": "down", "last_seen": "2023-10-27T09:00:00Z" }
-]
-```
-
-### 8. Starting the Cluster
+### 9. Startup Guide
 
 **Prerequisites:**
-1.  Ensure all nodes have Python 3.11+ installed.
-2.  Create a `cluster_config.json` file on **each** server.
-    *   Update `self_name` to match the specific server.
-    *   Ensure `nodes` list is identical on all servers.
+- Python 3.10+ installed.
+- Network connectivity between nodes on port 8080 (or configured port).
+- Firewall rules allowing internal traffic.
 
-**Startup Procedure (Windows PowerShell):**
+**Startup Procedure (Windows Server):**
 
-1.  **Deploy Code:** Copy `langid_service` to `C:\LangID` on all nodes.
-2.  **Configure:** Edit `C:\LangID\cluster_config.json`.
+1.  **Deploy Code:** Copy the application code to `C:\LangID` on all servers.
+2.  **Configure:** Create `C:\LangID\cluster_config.json` on each server. Ensure `nodes` list is identical on all servers.
 3.  **Start Node A:**
     ```powershell
     $env:LANGID_CLUSTER_CONFIG_FILE="C:\LangID\cluster_config.json"
@@ -523,45 +547,62 @@ Returns the health status of all configured nodes by probing their `/health` end
 5.  **Verify:**
     Open `http://node-a:8080/cluster/nodes` to confirm all nodes are "up".
 
-### 9. Monitoring & Operations
+**Startup Procedure (macOS/Linux):**
 
-**Monitoring:**
-- Poll `GET /cluster/nodes` every minute to detect node failures.
-- Monitor `GET /metrics` on each node for individual load stats.
+1.  **Deploy Code:** Clone repo or copy files.
+2.  **Configure:** Create/edit `cluster_config.json`.
+3.  **Start Node:**
+    ```bash
+    export LANGID_CLUSTER_CONFIG_FILE="/path/to/cluster_config.json"
+    # Run from the root of the repository
+    ./langid_service/.venv/bin/python -m uvicorn langid_service.app.main:app --host 0.0.0.0 --port 8080
+    ```
+    Or inline:
+    ```bash
+    LANGID_CLUSTER_CONFIG_FILE=./cluster_config.json ./langid_service/.venv/bin/python -m uvicorn langid_service.app.main:app --host 0.0.0.0 --port 8080
+    ```
 
-**Node Failure:**
-- If a node fails, its jobs become inaccessible (`503 Owner Unreachable`).
-- The cluster dashboard will show the node as `reachable: false`.
-- **Action:** Restart the failed node. No manual failover is needed; the node will resume serving its local DB upon restart.
+4.  **Start Node B & C:** Repeat step 3 on other nodes.
+5.  **Verify:**
+    Open `http://node-a:8080/cluster/nodes` to confirm all nodes are "up".
 
-**Rolling Upgrades:**
-1.  Stop service on **node-a**.
-2.  Deploy new code.
-3.  Restart service.
-4.  Verify `/health`.
-5.  Repeat for **node-b**, etc.
+### 10. Monitoring & Operations
 
-### 10. Edge Cases & Failure Modes
+*   **Logs:** Check standard output/error for proxy failures or connection errors.
+*   **Dashboard:** Use `/cluster/jobs` to monitor overall cluster activity.
+*   **Node Failure:**
+    *   If a node fails, its jobs become inaccessible (`503`).
+    *   The Round-Robin Scheduler will automatically skip the failed node for *new* jobs.
+    *   Other nodes continue to function.
+*   **Recovery:**
+    *   Restart the failed node.
+    *   It will automatically rejoin the cluster (other nodes will see it as "healthy" again).
+*   **Upgrades:**
+    *   Perform rolling restarts.
+    *   The scheduler will route around the node being upgraded.
 
-| Scenario | Behavior | Client Action |
-|---|---|---|
-| **Owner Node Down** | Proxy returns `503`. | Retry later. |
-| **Config Mismatch** | `parse_job_owner` may fail or routing loops may occur. | Ensure config consistency. |
-| **Network Partition** | Nodes see peers as "down". Local jobs still work. | Wait for network recovery. |
-| **Unknown Prefix** | Request returns `400 Bad Request`. | Check client job ID source. |
+### 11. Edge Cases & Failure Modes
 
-### 11. Appendix: Endpoint Reference
+| Scenario | Behavior |
+| :--- | :--- |
+| **Node Offline (Owner)** | Requests for jobs owned by this node return `503 Service Unavailable`. |
+| **Node Offline (Target)** | `POST /jobs` retries with the next healthy node. |
+| **Network Partition** | Nodes can only see/proxy to nodes in their partition. Dashboard shows partial results. |
+| **Config Mismatch** | If `nodes` lists differ, routing loops or 404s may occur. Ensure config consistency. |
+| **Recursion Limit** | The `internal=1` flag prevents infinite proxy loops. |
 
-| Method | Endpoint | Description | HA Behavior |
-|---|---|---|---|
-| `POST` | `/jobs` | Submit new job | **Local**: Created on receiving node. |
-| `GET` | `/jobs/{id}` | Get job status | **Proxied**: Forwards to owner if remote. |
-| `GET` | `/jobs/{id}/result` | Get job result | **Proxied**: Forwards to owner if remote. |
-| `DELETE` | `/jobs/{id}` | Delete job | **Proxied**: Forwards to owner if remote. |
-| `GET` | `/admin/jobs` | List local jobs | **Local Only**: Used by aggregator. |
-| `GET` | `/cluster/jobs` | Cluster dashboard | **Aggregated**: Fans out to all nodes. |
-| `GET` | `/cluster/nodes` | Cluster health | **Aggregated**: Probes all nodes. |
-| `GET` | `/health` | Node health | **Local**: Returns 200 OK. |
+### 12. Appendix: Endpoint Reference
+
+| Method | Endpoint | Description | Internal/External |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/jobs` | Submit job (Distributed via Round-Robin) | External |
+| `GET` | `/jobs/{id}` | Get status (Proxied to owner) | External |
+| `GET` | `/jobs/{id}/result` | Get result (Proxied to owner) | External |
+| `DELETE` | `/jobs/{id}` | Delete job (Proxied to owner) | External |
+| `GET` | `/admin/jobs` | **Local** jobs only | Internal |
+| `GET` | `/cluster/jobs` | Aggregated cluster jobs | External |
+| `GET` | `/cluster/nodes` | Cluster node health status | External |
+| `GET` | `/health` | Local node health | Internal/External |
 
 
 
