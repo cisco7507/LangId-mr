@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import JobResultModal from "./JobResultModal.jsx";
 import { apiFetch } from "./api";
 import { fetchMetricsJson } from "./metricsApi";
+import ClusterMetricsCard from "./components/ClusterMetricsCard";
 
 function StatusBadge({ status }) {
   const base =
@@ -231,8 +232,13 @@ function App() {
           </div>
         </section>
 
-    {/* Jobs table & actions */}
-    <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+        {/* Cluster Metrics */}
+        <section className="mb-6">
+          <ClusterMetricsCard />
+        </section>
+
+        {/* Jobs table & actions */}
+        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-200 px-4 py-3 text-sm font-medium text-slate-700">
             <div className="flex items-center justify-between gap-3">
               <span>Jobs</span>
@@ -377,9 +383,8 @@ function StatCard({ label, value, accent }) {
   };
   return (
     <div
-      className={`rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm ${
-        accent ? accentClasses[accent] ?? "" : ""
-      }`}
+      className={`rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm ${accent ? accentClasses[accent] ?? "" : ""
+        }`}
     >
       <p className="text-xs font-medium uppercase tracking-wide text-slate-600">
         {label}
