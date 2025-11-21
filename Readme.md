@@ -359,6 +359,29 @@ flowchart TB
     NodeA -->|5. Return job-id| Client
 ```
 
+**How Load Distribution Works:**
+
+The Load Distribution flow demonstrates how the cluster distributes new job submissions across all healthy nodes without requiring an external load balancer.
+
+**Key Concepts:**
+- **Ingress Node:** The node that receives the initial client request. This can be any node in the cluster.
+- **Target Node:** The node selected by the round-robin scheduler to actually create and own the job.
+- **Round-Robin Selection:** Each ingress node maintains a shared rotation index, cycling through all healthy nodes to distribute load evenly.
+- **Transparent Proxying:** If the target is not the ingress node, the request is internally proxied without client awareness.
+
+**Flow Explanation:**
+1. **Client Request:** The client sends `POST /jobs` with audio file to Node A (which happens to be the ingress point in this example).
+2. **Target Selection:** Node A's round-robin scheduler determines that Node B should handle this job. The scheduler skips unhealthy nodes automatically.
+3. **Internal Proxy:** Node A forwards the complete request to Node B with an `?internal=1` query parameter to prevent infinite routing loops.
+4. **Job Creation:** Node B creates the job locally, assigning it a job ID prefixed with its node name (e.g., `node-b-abc123`). The job is stored in Node B's local database and processed by Node B's workers.
+5. **Response Chain:** Node B returns the job ID to Node A, which forwards it to the client.
+
+**Important Notes:**
+- The client is unaware that proxying occurred; it only sees a single request/response.
+- The job ID prefix (`node-b-`) ensures all future requests for this job are routed to Node B.
+- If Node B is unhealthy, the scheduler automatically selects the next healthy node (e.g., Node C).
+- If the target equals the ingress (e.g., Node A selects Node A), no proxying occurs—the job is created locally.
+
 **Cluster Diagram (Read/Status Flow):**
 
 ```mermaid
@@ -377,6 +400,40 @@ flowchart TB
     NodeA -->|3. Return Job Data| NodeB
     NodeB -->|4. Return Job Data| Client
 ```
+
+**How Read/Status Routing Works:**
+
+The Read/Status flow illustrates how the cluster routes read requests (status checks, results, deletions) to the correct owner node based on job ID prefixes.
+
+**Key Concepts:**
+- **Owner Node:** The node that created and owns a specific job. Identified by the job ID prefix (e.g., `node-a-123` is owned by Node A).
+- **Deterministic Routing:** The cluster uses job ID parsing to route requests to the correct owner without a central registry.
+- **Any Node as Entry Point:** Clients can query any node for any job; the cluster handles routing transparently.
+- **Consistent Data:** Each job's data (database record, audio files, results) exists only on its owner node.
+
+**Flow Explanation:**
+1. **Client Request:** The client sends `GET /jobs/node-a-123/result` to Node B (perhaps for load-balancing or geographic reasons).
+2. **Owner Detection:** Node B parses the job ID prefix (`node-a-`) and determines Node A owns this job.
+3. **Internal Proxy:** Node B forwards the request to Node A with `?internal=1` to prevent re-routing.
+4. **Data Retrieval:** Node A fetches the job from its local database, formats the response (including language code formatting per `LANG_CODE_FORMAT`), and returns it to Node B.
+5. **Response Forwarding:** Node B relays the response to the client unchanged.
+
+**Important Notes:**
+- If the client requests `GET /jobs/node-b-456/status` from Node B, no proxying occurs—Node B handles it locally.
+- If the owner node is unreachable, the request fails with `503 Service Unavailable`. There is no automatic failover for existing jobs since data is not replicated.
+- This applies to all job-specific endpoints: `/jobs/{id}`, `/jobs/{id}/result`, `/jobs/{id}/status`, `/jobs/{id}/audio`, `DELETE /jobs/{id}`.
+- The `?internal=1` flag prevents infinite proxy loops if configuration errors occur.
+
+**Comparison:**
+
+| Aspect | Load Distribution | Read/Status Routing |
+|--------|-------------------|---------------------|
+| **Trigger** | `POST /jobs` (new job creation) | `GET /jobs/{id}/*` (existing job access) |
+| **Target Selection** | Round-robin across healthy nodes | Deterministic by job ID prefix |
+| **Failover** | Yes - retry next healthy node | No - request fails if owner down |
+| **Data Created** | New job record on target node | No new data, read-only |
+| **Client Awareness** | Opaque - client sees single response | Opaque - client sees single response |
+
 
 ### 2. Cluster Configuration
 
