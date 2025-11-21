@@ -4,6 +4,7 @@ import asyncio
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 from . import config as cluster_config
+from langid_service.metrics import prometheus as prom_metrics
 
 # In-memory store for last_seen timestamps
 _last_seen_map: Dict[str, str] = {}
@@ -18,8 +19,14 @@ async def check_cluster_health() -> List[Dict[str, Any]]:
             async with httpx.AsyncClient(timeout=config.internal_request_timeout_seconds) as client:
                 resp = await client.get(target_url)
                 if resp.status_code == 200:
-                    now_str = datetime.now(timezone.utc).isoformat()
+                    now = datetime.now(timezone.utc)
+                    now_str = now.isoformat()
                     _last_seen_map[name] = now_str
+                    
+                    # Metrics
+                    prom_metrics.set_node_up(name, 1)
+                    prom_metrics.set_node_last_health_timestamp(name, now.timestamp())
+                    
                     return {
                         "name": name,
                         "status": "up",
@@ -27,6 +34,9 @@ async def check_cluster_health() -> List[Dict[str, Any]]:
                     }
         except Exception:
             pass
+        
+        # Metrics
+        prom_metrics.set_node_up(name, 0)
         
         return {
             "name": name,

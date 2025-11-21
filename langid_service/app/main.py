@@ -95,6 +95,9 @@ def start_workers():
 @app.on_event("startup")
 def on_startup():
     start_workers()
+    # Initial node status
+    prom_metrics.set_node_up(get_self_name(), 1)
+    prom_metrics.set_node_last_health_timestamp(get_self_name(), datetime.now(UTC).timestamp())
 
 @app.on_event("shutdown")
 def on_shutdown():
@@ -118,6 +121,13 @@ def metrics():
 def prometheus_metrics():
     data = generate_latest(REGISTRY)
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+
+@app.get("/cluster/metrics-summary")
+def cluster_metrics_summary():
+    """
+    Return aggregated cluster metrics for the UI.
+    """
+    return prom_metrics.get_metrics_summary()
 
 
 @app.get("/metrics/json")
@@ -271,6 +281,12 @@ def delete_jobs(payload: DeleteJobsRequest):
     finally:
         session.close()
 
+from langid_service.metrics import prometheus as prom_metrics
+
+# ... imports ...
+
+# ... existing code ...
+
 async def create_job_local(file: UploadFile, target_lang: Optional[str] = None) -> EnqueueResponse:
     # Validate target language
     if target_lang:
@@ -311,6 +327,10 @@ async def create_job_local(file: UploadFile, target_lang: Optional[str] = None) 
         )
         session.add(job)
         session.commit()
+        
+        # Metric: jobs owned
+        prom_metrics.increment_jobs_owned(get_self_name())
+        
     finally:
         session.close()
 
@@ -333,11 +353,15 @@ async def submit_job(
     max_attempts = len(get_nodes()) if get_nodes() else 1
     attempts = 0
     
+    ingress_node = get_self_name()
+    
     while attempts < max_attempts:
         target = await scheduler.next_target()
         attempts += 1
         
         if target == get_self_name():
+            # Metric: jobs submitted (local target)
+            prom_metrics.increment_jobs_submitted(ingress_node, target)
             return await create_job_local(file, target_lang)
         
         try:
@@ -350,6 +374,8 @@ async def submit_job(
             )
             
             if resp.status_code in (200, 201, 202):
+                # Metric: jobs submitted (remote target)
+                prom_metrics.increment_jobs_submitted(ingress_node, target)
                 return EnqueueResponse(**json.loads(resp.body))
             
             # If 503, retry next node
@@ -369,6 +395,8 @@ async def submit_job(
             continue
             
     # Fallback to local if all else fails
+    # Metric: jobs submitted (fallback local)
+    prom_metrics.increment_jobs_submitted(ingress_node, get_self_name())
     return await create_job_local(file, target_lang)
 
 @app.post("/jobs/by-url", response_model=EnqueueResponse)
