@@ -27,6 +27,8 @@ The LangID Service is a high-performance, multithreaded microservice designed fo
 - [I. Installation & Running](#i-installation--running)
 - [J. Examples](#j-examples)
 - [K. Internal HA Cluster Architecture](#k-internal-ha-cluster-architecture)
+- [L. Prometheus Metrics and Monitoring](#l-prometheus-metrics-and-monitoring)
+- [M. Language Code Configuration](#m-language-code-configuration)
 
 ## A. Overview
 
