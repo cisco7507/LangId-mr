@@ -32,6 +32,8 @@ param(
   [string]$LogonUser = "",        # optional: DOMAIN\user
   [string]$LogonPass = "",
 
+  [string]$ClusterConfig = "",    # Path to cluster_config.json
+
   [switch]$OpenFirewall = $true
 )
 
@@ -249,6 +251,11 @@ $envPairs = @(
   "APP_PORT=$Port",
   "PYTHONPATH=$repoRoot"
 )
+
+if ($ClusterConfig) {
+  $envPairs += "LANGID_CLUSTER_CONFIG_FILE=$ClusterConfig"
+}
+
 foreach ($kv in $envPairs) {
   & $nssm set $ServiceName AppEnvironmentExtra $kv
 }
