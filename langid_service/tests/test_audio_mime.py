@@ -52,7 +52,8 @@ def test_audio_endpoint_reports_wrong_mime_for_unprefixed_file(monkeypatch, tmp_
     verify the audio endpoint's Content-Type is not audio/mpeg (i.e., the bug).
     """
     # Prepare storage path and fake mp3 content stored without an extension
-    job_id = gen_uuid()
+    from langid_service.cluster.config import get_self_name
+    job_id = f"{get_self_name()}-{gen_uuid()}"
     storage_dir = Path(os.getenv("STORAGE_DIR"))
     storage_dir.mkdir(parents=True, exist_ok=True)
 

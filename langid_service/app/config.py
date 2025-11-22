@@ -49,3 +49,14 @@ WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")
 ALLOWED_LANGS: Set[str] = set(os.getenv("ALLOWED_LANGS", "en,fr").split(","))
 LANG_DETECT_MIN_PROB = float(os.getenv("LANG_DETECT_MIN_PROB", 0.60))
 ENFR_STRICT_REJECT = _get_env_boolean("ENFR_STRICT_REJECT", False)
+
+# --- Language Code Format ---
+from .models.languages import LanguageCodeFormat
+_raw_format = os.getenv("LANG_CODE_FORMAT", "iso639-1").lower()
+try:
+    LANG_CODE_FORMAT = LanguageCodeFormat(_raw_format)
+except ValueError:
+    import logging
+    logging.warning(f"Invalid LANG_CODE_FORMAT '{_raw_format}', defaulting to iso639-1")
+    LANG_CODE_FORMAT = LanguageCodeFormat.ISO639_1
+

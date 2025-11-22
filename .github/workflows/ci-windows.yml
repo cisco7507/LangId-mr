@@ -70,10 +70,14 @@ jobs:
         working-directory: ./dashboard
         run: |
           Write-Host "==> Simulating Install-LangIdDashboard.ps1 on CI" -ForegroundColor Cyan
-          # Create a fake build folder so the script passes its initial validation.
+          # Create a fake deployment directory and copy the actual build output there
           $dashDir = "C:\LangId\dashboard"
           New-Item -ItemType Directory -Force -Path $dashDir | Out-Null
-          New-Item -ItemType Directory -Force -Path (Join-Path $dashDir "build") | Out-Null
+          
+          # Copy the build output from the actual build step
+          Copy-Item -Path ".\build" -Destination $dashDir -Recurse -Force
+          Copy-Item -Path ".\package.json" -Destination $dashDir -Force
+          Copy-Item -Path ".\node_modules" -Destination $dashDir -Recurse -Force
 
           # Create a dummy nssm.exe so the script can "find" it without actually installing a service.
           $nssmDir = "C:\nssm"

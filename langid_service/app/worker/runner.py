@@ -19,6 +19,8 @@ from ..services.audio_io import load_audio_mono_16k
 from ..translate import translate_en_fr_only
 from ..utils import truncate_to_words
 from .. import metrics
+from langid_service.metrics import prometheus as prom_metrics
+from langid_service.cluster.config import get_self_name
 import threading
 
 CLAIM_LOCK = threading.Lock()
@@ -31,6 +33,7 @@ def process_one(session: Session, job: Job) -> None:
     job.updated_at = datetime.now(UTC)
     session.commit()
     metrics.LANGID_JOBS_RUNNING.inc()
+    prom_metrics.jobs_active_inc(get_self_name())
 
     try:
         # Load audio once from disk
@@ -178,6 +181,7 @@ def process_one(session: Session, job: Job) -> None:
         metrics.LANGID_JOBS_TOTAL.labels(status="failed").inc()
     finally:
         metrics.LANGID_JOBS_RUNNING.dec()
+        prom_metrics.jobs_active_dec(get_self_name())
 
 def work_once() -> Optional[str]:
     session = SessionLocal()

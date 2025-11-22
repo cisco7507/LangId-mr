@@ -107,7 +107,8 @@ def test_delete_job(mock_get_model, mock_load_audio, client):
     job_id = r.json()["job_id"]
     # Ensure the uploaded file was stored on disk
     from langid_service.app.config import STORAGE_DIR
-    stored_path = (STORAGE_DIR / job_id)
+    # The file is stored with .wav extension because original filename is clip_en.wav
+    stored_path = (STORAGE_DIR / f"{job_id}.wav")
     assert stored_path.exists(), f"Expected storage artifact for job {job_id} at {stored_path}"
 
     # Delete the job via API

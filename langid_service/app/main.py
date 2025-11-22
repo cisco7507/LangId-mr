@@ -7,8 +7,9 @@ except ImportError:  # Python < 3.11
 
     UTC = timezone.utc
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Response
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Response, Query, Request
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 import mimetypes
 from pydantic import ValidationError
 from loguru import logger
@@ -26,6 +27,13 @@ from .worker.runner import work_once
 from .guards import ensure_allowed
 from .lang_gate import validate_language_strict
 from .services.audio_io import load_audio_mono_16k
+from langid_service.cluster.config import get_self_name, get_nodes
+from langid_service.cluster.router import is_local, proxy_to_owner, proxy_job_submission
+from langid_service.cluster.scheduler import scheduler
+from langid_service.cluster.dashboard import aggregate_cluster_jobs
+from langid_service.cluster.health import check_cluster_health
+from .models.languages import to_iso_code, get_language_label, from_iso_code
+from .config import LANG_CODE_FORMAT
 
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
@@ -86,9 +94,31 @@ def start_workers():
         worker_processes.append(p)
     logger.info(f"Started {len(worker_processes)} worker processes")
 
+import asyncio
+from langid_service.cluster.config import load_cluster_config
+
+# ...
+
+async def health_check_loop():
+    logger.info("Starting health check loop")
+    while True:
+        try:
+            config = load_cluster_config()
+            await check_cluster_health()
+            await asyncio.sleep(config.health_check_interval_seconds)
+        except Exception as e:
+            logger.error(f"Health check loop error: {e}")
+            await asyncio.sleep(5)
+
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
     start_workers()
+    # Initial node status
+    prom_metrics.set_node_up(get_self_name(), 1)
+    prom_metrics.set_node_last_health_timestamp(get_self_name(), datetime.now(UTC).timestamp())
+    
+    # Start health check loop
+    asyncio.create_task(health_check_loop())
 
 @app.on_event("shutdown")
 def on_shutdown():
@@ -112,6 +142,8 @@ def metrics():
 def prometheus_metrics():
     data = generate_latest(REGISTRY)
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+
+
 
 
 @app.get("/metrics/json")
@@ -212,7 +244,8 @@ def get_jobs():
             attempts=job.attempts,
             filename=Path(job.input_path).name if job.input_path else None,
             original_filename=job.original_filename,
-            language=(json.loads(job.result_json).get("language") if job.result_json else None),
+            language=to_iso_code(json.loads(job.result_json).get("language"), LANG_CODE_FORMAT) if job.result_json else None,
+            language_label=get_language_label(json.loads(job.result_json).get("language")) if job.result_json else None,
             probability=(json.loads(job.result_json).get("probability") if job.result_json else None),
             error=job.error,
         ) for job in jobs])
@@ -265,13 +298,23 @@ def delete_jobs(payload: DeleteJobsRequest):
     finally:
         session.close()
 
-@app.post("/jobs", response_model=EnqueueResponse)
-async def submit_job(file: UploadFile = File(...), target_lang: Optional[str] = None):
+from langid_service.metrics import prometheus as prom_metrics
+
+# ... imports ...
+
+# ... existing code ...
+
+async def create_job_local(file: UploadFile, target_lang: Optional[str] = None) -> EnqueueResponse:
     # Validate target language
     if target_lang:
+        canonical = from_iso_code(target_lang, LANG_CODE_FORMAT)
+        if not canonical:
+            raise HTTPException(status_code=400, detail=f"Invalid language code '{target_lang}' for format {LANG_CODE_FORMAT.value}")
+        target_lang = canonical
         ensure_allowed(target_lang)
 
     # Validate upload
+    # Note: file cursor should be at 0
     raw = await file.read()
     try:
         validate_upload(file.filename, len(raw))
@@ -289,7 +332,7 @@ async def submit_job(file: UploadFile = File(...), target_lang: Optional[str] = 
         audio = load_audio_mono_16k(str(tmp_path))
         validate_language_strict(audio)
 
-    job_id = gen_uuid()
+    job_id = f"{get_self_name()}-{gen_uuid()}"
     stored = move_to_storage(tmp_path, job_id, original_filename=file.filename)
     logger.info(f"Enqueued upload for job {job_id}: {stored}")
 
@@ -305,10 +348,77 @@ async def submit_job(file: UploadFile = File(...), target_lang: Optional[str] = 
         )
         session.add(job)
         session.commit()
+        
+        # Metric: jobs owned
+        prom_metrics.increment_jobs_owned(get_self_name())
+        
     finally:
         session.close()
 
     return EnqueueResponse(job_id=job_id, status="queued")
+
+@app.post("/jobs", response_model=EnqueueResponse)
+async def submit_job(
+    file: UploadFile = File(...), 
+    target_lang: Optional[str] = None,
+    internal: Optional[str] = Query(None)
+):
+    if internal == "1":
+        return await create_job_local(file, target_lang)
+
+    # Round Robin Distribution
+    # Read file content once to reuse in proxy
+    file_content = await file.read()
+    await file.seek(0)
+    
+    max_attempts = len(get_nodes()) if get_nodes() else 1
+    attempts = 0
+    
+    ingress_node = get_self_name()
+    
+    while attempts < max_attempts:
+        target = await scheduler.next_target()
+        attempts += 1
+        
+        if target == get_self_name():
+            # Metric: jobs submitted (local target)
+            prom_metrics.increment_jobs_submitted(ingress_node, target)
+            return await create_job_local(file, target_lang)
+        
+        try:
+            # Proxy to target
+            resp = await proxy_job_submission(
+                target_node=target,
+                file_content=file_content,
+                filename=file.filename,
+                target_lang=target_lang
+            )
+            
+            if resp.status_code in (200, 201, 202):
+                # Metric: jobs submitted (remote target)
+                prom_metrics.increment_jobs_submitted(ingress_node, target)
+                return EnqueueResponse(**json.loads(resp.body))
+            
+            # If 503, retry next node
+            if resp.status_code == 503:
+                continue
+                
+            # Propagate other errors
+            return Response(
+                content=resp.body,
+                status_code=resp.status_code,
+                headers=dict(resp.headers),
+                media_type=resp.headers.get("content-type")
+            )
+            
+        except Exception as e:
+            logger.warning(f"Failed to proxy job to {target}: {e}")
+            continue
+            
+    # Fallback to local if all else fails
+    # Metric: jobs submitted (fallback local)
+    prom_metrics.increment_jobs_submitted(ingress_node, get_self_name())
+    return await create_job_local(file, target_lang)
 
 @app.post("/jobs/by-url", response_model=EnqueueResponse)
 async def submit_job_by_url(payload: SubmitByUrl, target_lang: Optional[str] = None):
@@ -318,7 +428,7 @@ async def submit_job_by_url(payload: SubmitByUrl, target_lang: Optional[str] = N
 
     # Simple URL fetch (no auth) — for production, prefer signed URLs or internal sources.
     import urllib.request
-    job_id = gen_uuid()
+    job_id = f"{get_self_name()}-{gen_uuid()}"
     tmp_file = Path(tempfile.gettempdir()) / f"{job_id}.wav"
 
     url = payload.url
@@ -368,7 +478,10 @@ async def submit_job_by_url(payload: SubmitByUrl, target_lang: Optional[str] = N
     logger.info(f"Enqueued URL for job {job_id}: {stored}")
     return EnqueueResponse(job_id=job_id, status="queued")
 @app.get("/jobs/{job_id}", response_model=JobStatusResponse)
-def get_status(job_id: str):
+async def get_status(job_id: str, request: Request):
+    if not is_local(job_id):
+        return await proxy_to_owner(job_id, "", request.method, request.query_params, headers=request.headers)
+
     session = SessionLocal()
     try:
         job = session.get(Job, job_id)
@@ -383,7 +496,8 @@ def get_status(job_id: str):
             attempts=job.attempts,
             filename=Path(job.input_path).name if job.input_path else None,
             original_filename=job.original_filename,
-            language=(json.loads(job.result_json).get("language") if job.result_json else None),
+            language=to_iso_code(json.loads(job.result_json).get("language"), LANG_CODE_FORMAT) if job.result_json else None,
+            language_label=get_language_label(json.loads(job.result_json).get("language")) if job.result_json else None,
             probability=(json.loads(job.result_json).get("probability") if job.result_json else None),
             error=job.error,
         )
@@ -391,7 +505,10 @@ def get_status(job_id: str):
         session.close()
 
 @app.get("/jobs/{job_id}/result", response_model=ResultResponse)
-def get_result(job_id: str):
+async def get_result(job_id: str, request: Request):
+    if not is_local(job_id):
+        return await proxy_to_owner(job_id, "/result", request.method, request.query_params, headers=request.headers)
+
     session = SessionLocal()
     try:
         job = session.get(Job, job_id)
@@ -404,30 +521,54 @@ def get_result(job_id: str):
         # We'll use this for the top-level snippet.
         transcript_snippet = raw.get("text")
 
+        # Format language codes in the raw field recursively
+        def format_lang_codes(obj):
+            """Recursively format language codes in nested structures."""
+            if isinstance(obj, dict):
+                result = {}
+                for key, value in obj.items():
+                    if key == "language" and isinstance(value, str):
+                        # Format language code
+                        result[key] = to_iso_code(value, LANG_CODE_FORMAT)
+                    else:
+                        # Recurse into nested structures
+                        result[key] = format_lang_codes(value)
+                return result
+            elif isinstance(obj, list):
+                return [format_lang_codes(item) for item in obj]
+            else:
+                return obj
+        
+        formatted_raw = format_lang_codes(raw)
+
         return ResultResponse(
             job_id=job.id,
-            language=raw.get("language", "unknown"),
+            language=to_iso_code(raw.get("language", "unknown"), LANG_CODE_FORMAT),
+            language_label=get_language_label(raw.get("language", "unknown")),
             probability=raw.get("probability", 0.0), # Note: worker doesn't set this field
             detection_method=raw.get("detection_method"),
             gate_decision=raw.get("gate_decision"),
-            gate_meta=raw.get("gate_meta"),
+            gate_meta=format_lang_codes(raw.get("gate_meta")),
             music_only=raw.get("music_only", False),
             transcript_snippet=transcript_snippet,
             processing_ms=raw.get("processing_ms", 0),
             original_filename=job.original_filename,
-            raw=raw,
+            raw=formatted_raw,
         )
     finally:
         session.close()
 
 
 @app.get("/jobs/{job_id}/audio")
-def get_job_audio(job_id: str):
+async def get_job_audio(job_id: str, request: Request):
     """Serve the original uploaded audio file for a job.
 
     This returns a `FileResponse` with an appropriate audio content-type.
     The dashboard uses this endpoint to embed an audio player.
     """
+    if not is_local(job_id):
+        return await proxy_to_owner(job_id, "/audio", request.method, request.query_params, headers=request.headers)
+
     session = SessionLocal()
     try:
         job = session.get(Job, job_id)
@@ -466,3 +607,98 @@ def get_job_audio(job_id: str):
         return FileResponse(path=str(audio_path), media_type=mime_type, headers=headers)
     finally:
         session.close()
+
+@app.delete("/jobs/{job_id}")
+async def delete_job(job_id: str, request: Request):
+    if not is_local(job_id):
+        return await proxy_to_owner(job_id, "", request.method, request.query_params, headers=request.headers)
+    
+    session = SessionLocal()
+    try:
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        # Delete storage
+        storage_root = STORAGE_DIR.resolve()
+        try:
+            pattern = f"{job.id}*"
+            for p in storage_root.glob(pattern):
+                if p.is_dir():
+                    shutil.rmtree(p)
+                else:
+                    p.unlink(missing_ok=True)
+        except Exception:
+            logger.exception(f"Error cleaning storage for {job.id}")
+
+        session.delete(job)
+        session.commit()
+        return {"status": "ok", "job_id": job_id}
+    finally:
+        session.close()
+
+@app.get("/admin/jobs")
+def get_admin_jobs(status: Optional[str] = None, since: Optional[str] = None):
+    session = SessionLocal()
+    try:
+        query = session.query(Job)
+        if status:
+            query = query.filter(Job.status == status)
+        if since:
+            # Parse ISO8601
+            try:
+                dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+                query = query.filter(Job.created_at >= dt)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid since format")
+        
+        jobs = query.all()
+        return {
+            "server": get_self_name(),
+            "jobs": [
+                {
+                    "job_id": job.id,
+                    "status": job.status.value,
+                    "created_at": job.created_at.isoformat() if job.created_at else None,
+                    "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+                    "language": (to_iso_code(json.loads(job.result_json).get("language"), LANG_CODE_FORMAT) if job.result_json else None),
+                    "language_label": (get_language_label(json.loads(job.result_json).get("language")) if job.result_json else None),
+                    "probability": (json.loads(job.result_json).get("probability") if job.result_json else None),
+                }
+                for job in jobs
+            ]
+        }
+    finally:
+        session.close()
+
+@app.get("/cluster/jobs")
+async def get_cluster_jobs_endpoint(
+    request: Request,
+    status: Optional[str] = None, 
+    since: Optional[str] = None, 
+    limit: Optional[int] = None
+):
+    return await aggregate_cluster_jobs(status, since, limit)
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "node": get_self_name()}
+
+@app.get("/cluster/nodes")
+async def get_cluster_nodes():
+    return await check_cluster_health()
+
+@app.get("/cluster/local-metrics")
+def get_local_metrics_endpoint():
+    """
+    Internal endpoint to expose local metrics for aggregation.
+    """
+    return prom_metrics.get_local_metrics()
+
+@app.get("/cluster/metrics-summary")
+async def get_metrics_summary_endpoint():
+    """
+    Aggregated metrics summary for the UI.
+    """
+    from langid_service.cluster.dashboard import aggregate_cluster_metrics
+    return await aggregate_cluster_metrics()

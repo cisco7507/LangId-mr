@@ -1,0 +1,14 @@
+{
+    "_comment": "Place this file in the repository root (e.g. C:\\LangId-mr\\cluster_config.json) OR specify path via -ClusterConfig in nssm_install.ps1",
+    "self_name": "node-a",
+    "nodes": {
+        "node-a": "http://langid-node-a.corp.local:8080",
+        "node-b": "http://langid-node-b.corp.local:8080",
+        "node-c": "http://langid-node-c.corp.local:8080"
+    },
+    "health_check_interval_seconds": 30,
+    "internal_request_timeout_seconds": 10,
+    "enable_round_robin": true,
+    "rr_state_file": "C:\\ProgramData\\LangID\\rr_state.json",
+    "rr_strategy": "global"
+}
