@@ -338,7 +338,6 @@ export default function JobResultModal({ jobResult, onClose }) {
 }
 
 function LanguageBadge({ language, label }) {
-  let displayLabel = label || "Unknown";
   let classes = "bg-slate-100 text-slate-800";
 
   // Simple heuristic for styling based on label or code
