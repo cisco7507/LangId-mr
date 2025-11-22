@@ -16,22 +16,21 @@ El Servicio LangID es un microservicio multihilo de alto rendimiento diseñado p
 # Servicio LangID — README Unificado
 
 ## Tabla de Contenidos
-- [A. Descripción General](#a-descripción-general)
-- [B. Arquitectura](#b-arquitectura)
-- [C. Tubería Completa de Compuerta EN/FR](#c-tubería-completa-de-compuerta-enfr)
-- [D. Detalles del Modelo Whisper + GPU](#d-detalles-del-modelo-whisper--gpu)
-- [E. Sistema de Trabajadores](#e-sistema-de-trabajadores)
-- [F. Configuración (.env)](#f-configuración-env)
-- [G. Referencia de la API](#g-referencia-de-la-api)
-- [H. Almacenamiento + Diseño de BD](#h-almacenamiento--diseño-de-bd)
-- [I. Instalación y Ejecución](#i-instalación-y-ejecución)
-- [I. Ejemplos](#i-ejemplos)
-- [J. Despliegue en Windows](#j-despliegue-en-windows)
-- [K. Arquitectura de Clúster HA Interno](#k-arquitectura-de-clúster-ha-interno)
-- [L. Métricas de Prometheus y Monitoreo](#l-métricas-de-prometheus-y-monitoreo)
-- [M. Configuración de Códigos de Idioma](#m-configuración-de-códigos-de-idioma)
+- [1. Descripción General](#1-descripción-general)
+- [2. Arquitectura](#2-arquitectura)
+- [3. Tubería Completa de Compuerta EN/FR](#3-tubería-completa-de-compuerta-enfr)
+- [4. Detalles del Modelo Whisper + GPU](#4-detalles-del-modelo-whisper--gpu)
+- [5. Sistema de Trabajadores](#5-sistema-de-trabajadores)
+- [6. Configuración (.env)](#6-configuración-env)
+- [7. Referencia de la API](#7-referencia-de-la-api)
+- [8. Almacenamiento + Diseño de BD](#8-almacenamiento--diseño-de-bd)
+- [9. Ejemplos](#9-ejemplos)
+- [10. Despliegue en Windows](#10-despliegue-en-windows)
+- [11. Arquitectura de Clúster HA Interno](#11-arquitectura-de-clúster-ha-interno)
+- [12. Métricas de Prometheus y Monitoreo](#12-métricas-de-prometheus-y-monitoreo)
+- [13. Configuración de Códigos de Idioma](#13-configuración-de-códigos-de-idioma)
 
-## A. Descripción General
+## 1. Descripción General
 
 El Servicio LangID es un microservicio backend que realiza la detección de idioma Inglés vs Francés y transcripción opcional para archivos de audio. El servicio acepta audio vía carga de archivos o URL, ejecuta una pasada corta de autodetección usando Whisper, aplica una compuerta EN/FR conservadora (incluyendo un detector de solo música), reintenta opcionalmente la detección con una prueba recortada por VAD, y produce un resultado JSON estructurado persistido con el registro del trabajo.
 
@@ -44,7 +43,7 @@ Límites del sistema:
 - Transcripción: realizada solo cuando la compuerta acepta el habla.
 - Resultados: `result_json` estructurado persistido en BD y devuelto por la API.
 
-## B. Arquitectura
+## 2. Arquitectura
 
 Componentes de alto nivel:
 - Servidor API: Aplicación FastAPI, endpoints de trabajos, salud y métricas.
@@ -69,7 +68,7 @@ flowchart TD
   API --> Dashboard[Panel de Control]
 ```
 
-## C. Tubería Completa de Compuerta EN/FR
+## 3. Tubería Completa de Compuerta EN/FR
 
 Esta sección documenta el comportamiento y configuración de la compuerta.
 
@@ -121,7 +120,7 @@ flowchart TD
 Salidas de la compuerta en `result_json`:
 - `gate_decision` (enum), `gate_meta` (metadatos detallados), `music_only` (bool), `use_vad` (bool).
 
-## D. Detalles del Modelo Whisper + GPU
+## 4. Detalles del Modelo Whisper + GPU
 
 Modelos soportados: `tiny`, `base`, `small`, `medium`, `large-v3`.
 
@@ -142,7 +141,7 @@ Configuraciones recomendadas:
 
 Si la GPU no es soportada, establezca `WHISPER_DEVICE=cpu` y use `WHISPER_COMPUTE=int8` donde la cuantización de CPU sea soportada.
 
-## E. Sistema de Trabajadores
+## 5. Sistema de Trabajadores
 
 Comportamiento del trabajador:
 - Cada proceso trabajador consulta la BD por trabajos en cola, reclama un trabajo, establece `status=processing`, y ejecuta detección/transcripción.
@@ -164,7 +163,7 @@ flowchart LR
   DBResult --> API
 ```
 
-## F. Configuración (.env)
+## 6. Configuración (.env)
 
 Variables de entorno importantes y valores predeterminados recomendados:
 
@@ -192,7 +191,7 @@ Variables de entorno importantes y valores predeterminados recomendados:
 
 Ajuste estos valores en producción de acuerdo a la capacidad de CPU/GPU y volumen de trabajos esperado.
 
-## G. Referencia de la API
+## 7. Referencia de la API
 
 URL Base: `http://<host>:<port>` (por defecto `http://0.0.0.0:8080`).
 
@@ -225,7 +224,7 @@ GET /metrics
 GET /healthz
 - Endpoint de comprobación de salud.
 
-## H. Almacenamiento + Diseño de BD
+## 8. Almacenamiento + Diseño de BD
 
 Estructura de almacenamiento:
 - `STORAGE_DIR/<job_id>/input.*` — audio fuente subido o descargado.
@@ -236,7 +235,7 @@ Campos de tabla de trabajos SQLite (resumen): `id`, `input_path`, `status`, `pro
 
 
 
-## I. Ejemplos
+## 9. Ejemplos
 
 Buena salida en Inglés:
 
@@ -300,7 +299,7 @@ Para mejorar la concurrencia cuando múltiples procesos trabajadores actualizan 
 - Usar registros estructurados en `LOG_DIR` y exponer métricas Prometheus para monitoreo.
 
 
-## K. Arquitectura de Clúster HA Interno
+## 11. Arquitectura de Clúster HA Interno
 
 Esta sección detalla la arquitectura de clúster de Alta Disponibilidad (HA) interno diseñada para despliegues en Windows Server donde no hay balanceadores de carga externos disponibles.
 
@@ -563,10 +562,10 @@ El panel agrega datos de todo el clúster.
 
 **Procedimiento de Inicio (Windows Server):**
 
-Por favor refiérase a la **Sección K. Despliegue en Windows** para instrucciones de instalación automatizada usando `nssm_install.ps1`.
+Por favor refiérase a la **Sección 10. Despliegue en Windows** para instrucciones de instalación automatizada usando `nssm_install.ps1`.
 
 1.  **Desplegar y Configurar:**
-    *   Siga las instrucciones en la Sección J para instalar el servicio en cada nodo.
+    *   Siga las instrucciones en la Sección 10 para instalar el servicio en cada nodo.
     *   Asegure que `cluster_config.json` sea creado en todos los servidores. La lista `nodes` debe ser idéntica, pero `self_name` debe ser único para cada servidor.
     *   Pase la ruta de configuración al instalador: `.\nssm_install.ps1 ... -ClusterConfig "C:\path\to\cluster_config.json"`
 
@@ -631,7 +630,7 @@ Por favor refiérase a la **Sección K. Despliegue en Windows** para instruccion
 | `GET` | `/health` | Salud de nodo local | Interno/Externo |
 
 
-## L. Métricas de Prometheus y Monitoreo
+## 12. Métricas de Prometheus y Monitoreo
 
 El servicio expone métricas de Prometheus para monitorear la salud del clúster, procesamiento de trabajos y distribución de carga.
 
@@ -746,7 +745,7 @@ curl http://localhost:8080/cluster/metrics-summary
 curl http://localhost:8080/cluster/local-metrics
 ```
 
-## M. Configuración de Códigos de Idioma
+## 13. Configuración de Códigos de Idioma
 
 Puede configurar el formato de códigos de idioma devueltos por la API y mostrados en el panel usando la variable de entorno `LANG_CODE_FORMAT`.
 
@@ -765,7 +764,7 @@ LANG_CODE_FORMAT=iso639-3
 - **Respuestas API:** campo `language` contendrá "eng" o "fra".
 - **Panel:** Lista de trabajos mostrará "eng (English)" o "fra (French)".
 
-## J. Despliegue en Windows
+## 10. Despliegue en Windows
 
 Proporcionamos scripts de PowerShell automatizados para desplegar tanto el servicio API como el Panel en Windows Server.
 
