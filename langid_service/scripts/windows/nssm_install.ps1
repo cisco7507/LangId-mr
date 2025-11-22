@@ -249,7 +249,8 @@ $envPairs = @(
   "CT2_TRANSLATORS_CACHE=$CacheDir",
   "APP_HOST=$BindHost",
   "APP_PORT=$Port",
-  "PYTHONPATH=$repoRoot"
+  "PYTHONPATH=$repoRoot",
+  "OMP_NUM_THREADS=1"
 )
 
 if ($ClusterConfig) {
