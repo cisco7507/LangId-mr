@@ -1,4 +1,5 @@
 {
+    "_comment": "Place this file in the repository root (e.g. C:\\LangId-mr\\cluster_config.json) OR specify path via -ClusterConfig in nssm_install.ps1",
     "self_name": "node-a",
     "nodes": {
         "node-a": "http://langid-node-a.corp.local:8080",
