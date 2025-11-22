@@ -27,29 +27,92 @@ if (-not (Test-Path $DashboardDir)) {
 }
 
 $buildPath = Join-Path $DashboardDir "build"
-if (-not (Test-Path $buildPath)) {
-  Write-Warning "Build folder not found: $buildPath. Attempting to build automatically if npm is available."
-  $npmCmd = (Get-Command npm -ErrorAction SilentlyContinue)?.Source
+$indexHtml = Join-Path $buildPath "index.html"
+
+# Ensure dependencies are installed
+if (-not (Test-Path (Join-Path $DashboardDir "node_modules"))) {
+  Write-Host "==> node_modules not found. Running 'npm install'..." -ForegroundColor Cyan
+  $npmCmd = Get-Command npm -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source | Select-Object -First 1
+  if ($npmCmd) {
+    Push-Location $DashboardDir
+    try { & $npmCmd install } finally { Pop-Location }
+  } else {
+    Write-Warning "npm not found. Cannot install dependencies."
+  }
+}
+
+# Ensure build exists and is valid
+if (-not (Test-Path $indexHtml)) {
+  Write-Warning "Build artifact ($indexHtml) not found. Attempting to build..."
+  
+  # Check for npm/node, install via NVM if missing
+  $npmCmd = Get-Command npm -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source | Select-Object -First 1
+  
+  if (-not $npmCmd) {
+    Write-Host "==> npm not found. Checking for NVM..." -ForegroundColor Cyan
+    $nvmCmd = Get-Command nvm -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source | Select-Object -First 1
+    
+    if (-not $nvmCmd) {
+      Write-Host "    NVM not found. Installing nvm-windows..." -ForegroundColor Yellow
+      $nvmUrl = "https://github.com/coreybutler/nvm-windows/releases/download/1.1.12/nvm-setup.exe"
+      $nvmInstaller = Join-Path $env:TEMP "nvm-setup.exe"
+      
+      # Ensure TLS 1.2+ is used (crucial for GitHub)
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      
+      try {
+        Write-Host "    Downloading NVM from $nvmUrl ..."
+        Invoke-WebRequest -Uri $nvmUrl -OutFile $nvmInstaller -UseBasicParsing -UserAgent "PowerShell-Downloader"
+        Start-Process -FilePath $nvmInstaller -ArgumentList "/SILENT" -Wait
+        Write-Host "    NVM installed." -ForegroundColor Green
+        
+        # Refresh env vars
+        $env:NVM_HOME = [System.Environment]::GetEnvironmentVariable("NVM_HOME", "Machine")
+        $env:NVM_SYMLINK = [System.Environment]::GetEnvironmentVariable("NVM_SYMLINK", "Machine")
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+      } catch {
+        Write-Warning "Failed to install NVM: $($_.Exception.Message)"
+      }
+      if (Test-Path $nvmInstaller) { Remove-Item $nvmInstaller -Force }
+    }
+
+    # Check NVM again
+    $nvmCmd = Get-Command nvm -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source | Select-Object -First 1
+    if ($nvmCmd) {
+      $nodeVer = Read-Host "Enter Node.js version to install (default: 22.13.1)"
+      if ([string]::IsNullOrWhiteSpace($nodeVer)) { $nodeVer = "22.13.1" }
+      
+      Write-Host "    Installing Node.js v$nodeVer..." -ForegroundColor Cyan
+      & nvm install $nodeVer
+      & nvm use $nodeVer
+      
+      # Refresh env again
+      $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+      $npmCmd = Get-Command npm -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source | Select-Object -First 1
+    }
+  }
+
   if ($npmCmd) {
     Write-Host "==> Running 'npm run build' in $DashboardDir" -ForegroundColor Cyan
     try {
       Push-Location $DashboardDir
       & $npmCmd run build
       Pop-Location
-      if (Test-Path $buildPath) { Write-Host "    Build succeeded: $buildPath" -ForegroundColor Green } else { Write-Warning "    Build did not produce a 'build' folder." }
+      if (-not (Test-Path $indexHtml)) { Fail "Build failed: index.html not found in $buildPath" }
+      Write-Host "    Build succeeded." -ForegroundColor Green
     } catch {
       try { Pop-Location } catch {}
-      Write-Warning "    npm build failed: $($_.Exception.Message)"
+      Fail "npm build failed: $($_.Exception.Message)"
     }
   } else {
-    Write-Warning "    npm not found in PATH; cannot auto-build. Run 'npm run build' in $DashboardDir manually."
+    Fail "npm not found. Cannot build dashboard."
   }
 } else {
-  Write-Host "    Found build folder: $buildPath" -ForegroundColor Green
+  Write-Host "    Found valid build: $indexHtml" -ForegroundColor Green
 }
 
 Write-Host "==> Locating NSSM..." -ForegroundColor Cyan
-if (-not $NssmPath) { $NssmPath = (Get-Command nssm.exe -ErrorAction SilentlyContinue)?.Source }
+if (-not $NssmPath) { $NssmPath = Get-Command nssm.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source | Select-Object -First 1 }
 if (-not $NssmPath) {
   foreach($p in @(
     "C:\nssm\nssm.exe",
@@ -63,23 +126,23 @@ Write-Host "    NSSM: $NssmPath"
 
 Write-Host "==> Ensuring 'serve' is installed..." -ForegroundColor Cyan
 # Try to find serve.cmd first (Windows global bin)
-$serveCmd = (Get-Command serve.cmd -ErrorAction SilentlyContinue)?.Source
+$serveCmd = Get-Command serve.cmd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source | Select-Object -First 1
 if (-not $serveCmd) {
   # Some shells resolve just 'serve'
-  $serveCmd = (Get-Command serve -ErrorAction SilentlyContinue)?.Source
+  $serveCmd = Get-Command serve -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source | Select-Object -First 1
 }
 
 if (-not $serveCmd) {
   npm i -g serve | Out-Null
-  $serveCmd = (Get-Command serve.cmd -ErrorAction SilentlyContinue)?.Source
-  if (-not $serveCmd) { $serveCmd = (Get-Command serve -ErrorAction SilentlyContinue)?.Source }
+  $serveCmd = Get-Command serve.cmd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source | Select-Object -First 1
+  if (-not $serveCmd) { $serveCmd = Get-Command serve -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source | Select-Object -First 1 }
 }
 
 # As a last resort, use node + serve.js path
 $useNodeServeJs = $false
 if (-not $serveCmd) {
   # locate node
-  $nodeExe = (Get-Command node.exe -ErrorAction SilentlyContinue)?.Source
+  $nodeExe = Get-Command node.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source | Select-Object -First 1
   if (-not $nodeExe) {
     $nodeCandidate = "C:\Program Files\nodejs\node.exe"
     if (Test-Path $nodeCandidate) { $nodeExe = $nodeCandidate }
@@ -137,7 +200,7 @@ if ($LASTEXITCODE -eq 0) {
 Write-Host "==> Installing service '$ServiceName'..." -ForegroundColor Cyan
 if ($useNodeServeJs) {
   # node serve.js …
-  $nodeExe = (Get-Command node.exe -ErrorAction SilentlyContinue)?.Source
+  $nodeExe = Get-Command node.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source | Select-Object -First 1
   if (-not $nodeExe) { Fail "node.exe not found (unexpected)."}
   $args = @($serveJs, "-s","build","-l",$Port,"--no-clipboard","--single")
   & $NssmPath install $ServiceName $nodeExe $args | Out-Null
