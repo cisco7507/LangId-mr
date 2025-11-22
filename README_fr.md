@@ -25,7 +25,8 @@ Le Service LangID est un microservice multithread haute performance conçu pour 
 - [G. Référence API](#g-référence-api)
 - [H. Stockage + Structure BDD](#h-stockage--structure-bdd)
 - [I. Installation & Exécution](#i-installation--exécution)
-- [J. Exemples](#j-exemples)
+- [I. Exemples](#i-exemples)
+- [J. Déploiement Windows](#j-déploiement-windows)
 - [K. Architecture de Cluster HA Interne](#k-architecture-de-cluster-ha-interne)
 - [L. Métriques Prometheus et Surveillance](#l-métriques-prometheus-et-surveillance)
 - [M. Configuration des Codes de Langue](#m-configuration-des-codes-de-langue)
@@ -233,35 +234,9 @@ Structure de stockage :
 
 Champs de table de travaux SQLite (résumé) : `id`, `input_path`, `status`, `progress`, `result_json`, `created_at`, `updated_at`, `attempts`, `error`.
 
-## I. Installation & Exécution
 
-Démarrage rapide Linux :
 
-```bash
-git clone https://github.com/<org>/LangId-mr.git /path/to/project
-cd /path/to/project/langid_service
-python -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-export WHISPER_DEVICE=auto
-export WHISPER_MODEL_SIZE=base
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8080
-```
-
-Exemple de production avec `gunicorn` :
-
-```bash
-gunicorn -w 4 -k uvicorn.workers.UvicornWorker "app.main:app" -b 0.0.0.0:8080
-```
-
-Windows Server (résumé) :
-- Installer Python 3.11 et Node 20.
-- Créer `.venv`, `pip install -r requirements.txt`.
-- Construire le tableau de bord (`cd dashboard && npm ci && npm run build`) et définir `public/config.js` en conséquence.
-- Utiliser NSSM ou un autre gestionnaire de services pour enregistrer l'API et le service de tableau de bord statique optionnel.
-
-## J. Exemples
+## I. Exemples
 
 Bonne sortie en Anglais :
 
@@ -588,18 +563,14 @@ Le tableau de bord agrège les données de tout le cluster.
 
 **Procédure de Démarrage (Windows Server) :**
 
-1.  **Déployer Code :** Copier le code de l'application vers `C:\LangID` sur tous les serveurs.
-2.  **Configurer :** Créer `C:\LangID\cluster_config.json` sur chaque serveur. S'assurer que la liste `nodes` est identique sur tous les serveurs.
-3.  **Démarrer Nœud A :**
-    ```powershell
-    $env:LANGID_CLUSTER_CONFIG_FILE="C:\LangID\cluster_config.json"
-    cd C:\LangID
-    # Exécuter depuis le répertoire parent de langid_service ou s'assurer qu'il est dans PYTHONPATH
-    # Il est recommandé d'exécuter depuis la racine du dépôt/déploiement
-    .\.venv\Scripts\python.exe -m uvicorn langid_service.app.main:app --host 0.0.0.0 --port 8080
-    ```
-4.  **Démarrer Nœud B & C :** Répéter l'étape 3 sur les autres nœuds.
-5.  **Vérifier :**
+Veuillez vous référer à la **Section K. Déploiement Windows** pour les instructions d'installation automatisée utilisant `nssm_install.ps1`.
+
+1.  **Déployer et Configurer :**
+    *   Suivez les instructions de la Section J pour installer le service sur chaque nœud.
+    *   Assurez-vous que `cluster_config.json` est créé sur tous les serveurs. La liste `nodes` doit être identique, mais `self_name` doit être unique pour chaque serveur.
+    *   Passez le chemin de configuration à l'installateur : `.\nssm_install.ps1 ... -ClusterConfig "C:\path\to\cluster_config.json"`
+
+2.  **Vérifier :**
     Ouvrir `http://node-a:8080/cluster/nodes` pour confirmer que tous les nœuds sont "up".
 
 **Procédure de Démarrage (macOS/Linux) :**
@@ -794,7 +765,7 @@ LANG_CODE_FORMAT=iso639-3
 - **Réponses API :** le champ `language` contiendra "eng" ou "fra".
 - **Tableau de Bord :** La liste des travaux affichera "eng (English)" ou "fra (French)".
 
-## K. Déploiement Windows
+## J. Déploiement Windows
 
 Nous fournissons des scripts PowerShell automatisés pour déployer à la fois le service API et le Tableau de Bord sur Windows Server.
 
