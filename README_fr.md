@@ -145,7 +145,9 @@ Si le GPU n'est pas supporté, définissez `WHISPER_DEVICE=cpu` et utilisez `WHI
 
 Comportement du travailleur :
 - Chaque processus travailleur interroge la BDD pour des travaux en file d'attente, réclame un travail, définit `status=processing`, et exécute la détection/transcription.
-- Paramètres de concurrence : `MAX_WORKERS` contrôle le nombre de processus ; `MAX_CONCURRENT_JOBS` contrôle le parallélisme par travailleur.
+- Chaque processus travailleur interroge la BDD pour des travaux en file d'attente, réclame un travail, définit `status=processing`, et exécute la détection/transcription.
+- **Concurrence :** Chaque processus travailleur traite exactement **un travail à la fois** (de manière synchrone).
+- **Mise à l'échelle :** La concurrence totale du système est déterminée par `MAX_WORKERS`. Par exemple, `MAX_WORKERS=4` signifie que 4 travaux peuvent être traités en parallèle.
 
 Notes de réclamation/mise à jour de travail :
 - Utiliser des mises à jour transactionnelles de BDD pour réclamer et mettre à jour les travaux. Préférer le mode SQLite WAL pour une meilleure concurrence.
@@ -173,7 +175,7 @@ Variables d'environnement importantes et valeurs par défaut recommandées :
 | `STORAGE_DIR` | `./storage` | Répertoire de stockage audio |
 | `DB_URL` | `sqlite:///./langid.sqlite` | URL BDD SQLAlchemy |
 | `MAX_WORKERS` | `2` | Nombre de processus travailleurs |
-| `MAX_CONCURRENT_JOBS` | `1` | Travaux par processus travailleur |
+
 | `MAX_RETRIES` | `3` | Max tentatives par travail |
 | `WHISPER_MODEL_SIZE` | `base` | Taille du modèle |
 | `WHISPER_DEVICE` | `auto` | `cpu` / `cuda` / `auto` |
@@ -288,13 +290,29 @@ Pour améliorer la concurrence lorsque plusieurs processus travailleurs mettent 
 2. **Pourquoi WAL aide**
    - Les lecteurs ne bloquent plus les écrivains.
    - Les écrivains ne bloquent généralement pas les lecteurs.
-   - Réduit considérablement les erreurs `database is locked` sous des travailleurs concurrents.
+1.  **Activer le mode WAL**
+    Le mode journal SQLite peut être activé de façon permanente en exécutant :
 
-3. **Réglage recommandé des travailleurs**
-   - Garder `MAX_WORKERS` bas à moins d'exécuter sur un SSD rapide.
-   - Configuration stable typique :
-     - `MAX_WORKERS=2`
-     - `MAX_CONCURRENT_JOBS=1`
+    ```bash
+    sqlite3 langid.sqlite "PRAGMA journal_mode=WAL;"
+    ```
+
+    Ou s'assurer qu'il est appliqué automatiquement dans `_db_connect()` :
+
+    ```python
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout = 5000;")
+    ```
+
+2.  **Pourquoi WAL aide**
+    - Les lecteurs ne bloquent plus les écrivains.
+    - Les écrivains ne bloquent généralement pas les lecteurs.
+    - Réduit considérablement les erreurs `database is locked` sous des travailleurs concurrents.
+
+3.  **Réglage recommandé des travailleurs**
+    - Garder `MAX_WORKERS` bas à moins d'exécuter sur un SSD rapide.
+    - Configuration stable typique :
+      - `MAX_WORKERS=2` (ou définir au nombre de cœurs CPU)
 
 - Utiliser des journaux structurés dans `LOG_DIR` et exposer les métriques Prometheus pour la surveillance.
 

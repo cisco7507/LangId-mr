@@ -145,7 +145,8 @@ Si la GPU no es soportada, establezca `WHISPER_DEVICE=cpu` y use `WHISPER_COMPUT
 
 Comportamiento del trabajador:
 - Cada proceso trabajador consulta la BD por trabajos en cola, reclama un trabajo, establece `status=processing`, y ejecuta detección/transcripción.
-- Configuraciones de concurrencia: `MAX_WORKERS` controla el conteo de procesos; `MAX_CONCURRENT_JOBS` controla el paralelismo por trabajador.
+- **Concurrencia:** Cada proceso trabajador maneja exactamente **un trabajo a la vez** (síncronamente).
+- **Escalado:** La concurrencia total del sistema está determinada por `MAX_WORKERS`. Por ejemplo, `MAX_WORKERS=4` significa que 4 trabajos pueden ser procesados en paralelo.
 
 Notas de reclamo/actualización de trabajo:
 - Usar actualizaciones transaccionales de BD para reclamar y actualizar trabajos. Preferir modo SQLite WAL para mejor concurrencia.
@@ -173,7 +174,6 @@ Variables de entorno importantes y valores predeterminados recomendados:
 | `STORAGE_DIR` | `./storage` | Directorio de almacenamiento de audio |
 | `DB_URL` | `sqlite:///./langid.sqlite` | URL de BD SQLAlchemy |
 | `MAX_WORKERS` | `2` | Número de procesos trabajadores |
-| `MAX_CONCURRENT_JOBS` | `1` | Trabajos por proceso trabajador |
 | `MAX_RETRIES` | `3` | Máx reintentos por trabajo |
 | `WHISPER_MODEL_SIZE` | `base` | Tamaño del modelo |
 | `WHISPER_DEVICE` | `auto` | `cpu` / `cuda` / `auto` |
@@ -271,30 +271,29 @@ Ejemplo de salida solo música:
 
 Para mejorar la concurrencia cuando múltiples procesos trabajadores actualizan la tabla de trabajos:
 
-1. **Habilitar modo WAL**
-   El modo diario SQLite puede habilitarse permanentemente ejecutando:
+1.  **Habilitar modo WAL**
+    El modo diario SQLite puede habilitarse permanentemente ejecutando:
 
-   ```bash
-   sqlite3 langid.sqlite "PRAGMA journal_mode=WAL;"
-   ```
+    ```bash
+    sqlite3 langid.sqlite "PRAGMA journal_mode=WAL;"
+    ```
 
-   O asegurar que se aplique automáticamente en `_db_connect()`:
+    O asegurar que se aplique automáticamente en `_db_connect()`:
 
-   ```python
-   conn.execute("PRAGMA journal_mode=WAL;")
-   conn.execute("PRAGMA busy_timeout = 5000;")
-   ```
+    ```python
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout = 5000;")
+    ```
 
-2. **Por qué ayuda WAL**
-   - Los lectores ya no bloquean a los escritores.
-   - Los escritores mayormente no bloquean a los lectores.
-   - Reduce grandemente errores `database is locked` bajo trabajadores concurrentes.
+2.  **Por qué ayuda WAL**
+    - Los lectores ya no bloquean a los escritores.
+    - Los escritores mayormente no bloquean a los lectores.
+    - Reduce grandemente errores `database is locked` bajo trabajadores concurrentes.
 
-3. **Ajuste recomendado de trabajadores**
-   - Mantener `MAX_WORKERS` bajo a menos que se ejecute en SSD rápido.
-   - Configuración estable típica:
-     - `MAX_WORKERS=2`
-     - `MAX_CONCURRENT_JOBS=1`
+3.  **Ajuste recomendado de trabajadores**
+    - Mantener `MAX_WORKERS` bajo a menos que se ejecute en SSD rápido.
+    - Configuración estable típica:
+      - `MAX_WORKERS=2` (o establecer al número de núcleos de CPU)
 
 - Usar registros estructurados en `LOG_DIR` y exponer métricas Prometheus para monitoreo.
 
