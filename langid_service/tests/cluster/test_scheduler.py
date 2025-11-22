@@ -23,6 +23,8 @@ def mock_config():
 async def test_round_robin_sequence_basic(mock_config):
     with patch("langid_service.cluster.config.load_cluster_config", return_value=mock_config):
         scheduler = RoundRobinScheduler()
+        # Prevent loading state from disk
+        scheduler._load_state = MagicMock()
         # Reset index for test
         scheduler._index = 0
         

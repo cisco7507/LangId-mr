@@ -65,10 +65,45 @@ def test_metrics_summary_structure():
     prom_metrics.increment_jobs_owned("node-b")
     prom_metrics.set_node_up("node-b", 1)
     
-    with patch("langid_service.cluster.config.load_cluster_config") as mock_load:
+    with patch("langid_service.cluster.config.load_cluster_config") as mock_load, \
+         patch("langid_service.cluster.dashboard.httpx.AsyncClient") as mock_client_cls:
+        
         mock_conf = MagicMock()
-        mock_conf.nodes = {"node-a": "url", "node-b": "url"}
+        mock_conf.nodes = {"node-a": "http://node-a", "node-b": "http://node-b"}
         mock_load.return_value = mock_conf
+        
+        # Mock the async client context manager and get method
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+        
+        # Define response for node-b (raw metrics format)
+        mock_resp_b = MagicMock()
+        mock_resp_b.status_code = 200
+        mock_resp_b.json.return_value = {
+            "jobs_submitted": {"node-a,node-b": 1},
+            "jobs_owned": {"node-b": 1},
+            "jobs_active": {},
+            "node_up": {"node-b": True},
+            "node_last_health": {"node-b": 1234567890.0}
+        }
+        
+        # Define response for node-a (empty/default)
+        mock_resp_a = MagicMock()
+        mock_resp_a.status_code = 200
+        mock_resp_a.json.return_value = {
+            "jobs_submitted": {},
+            "jobs_owned": {},
+            "jobs_active": {},
+            "node_up": {"node-a": True},
+            "node_last_health": {"node-a": 1234567890.0}
+        }
+
+        def side_effect(url, **kwargs):
+            if "node-b" in url:
+                return mock_resp_b
+            return mock_resp_a
+            
+        mock_client.get.side_effect = side_effect
         
         response = client.get("/cluster/metrics-summary")
         assert response.status_code == 200
