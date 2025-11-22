@@ -16,21 +16,21 @@ The LangID Service is a high-performance, multithreaded microservice designed fo
 # LangID Service — Unified README
 
 ## Table of Contents
-- [A. Overview](#a-overview)
-- [B. Architecture](#b-architecture)
-- [C. Full EN/FR Gate Pipeline](#c-full-enfr-gate-pipeline)
-- [D. Whisper Model + GPU Details](#d-whisper-model--gpu-details)
-- [E. Worker System](#e-worker-system)
-- [F. Configuration (.env)](#f-configuration-env)
-- [G. API Reference](#g-api-reference)
-- [H. Storage + DB Layout](#h-storage--db-layout)
-- [I. Installation & Running](#i-installation--running)
-- [J. Examples](#j-examples)
-- [K. Internal HA Cluster Architecture](#k-internal-ha-cluster-architecture)
-- [L. Prometheus Metrics and Monitoring](#l-prometheus-metrics-and-monitoring)
-- [M. Language Code Configuration](#m-language-code-configuration)
+- [1. Overview](#1-overview)
+- [2. Architecture](#2-architecture)
+- [3. Full EN/FR Gate Pipeline](#3-full-enfr-gate-pipeline)
+- [4. Whisper Model + GPU Details](#4-whisper-model--gpu-details)
+- [5. Worker System](#5-worker-system)
+- [6. Configuration (.env)](#6-configuration-env)
+- [7. API Reference](#7-api-reference)
+- [8. Storage + DB Layout](#8-storage--db-layout)
+- [9. Examples](#9-examples)
+- [10. Windows Deployment](#10-windows-deployment)
+- [11. Internal HA Cluster Architecture](#11-internal-ha-cluster-architecture)
+- [12. Prometheus Metrics and Monitoring](#12-prometheus-metrics-and-monitoring)
+- [13. Language Code Configuration](#13-language-code-configuration)
 
-## A. Overview
+## 1. Overview
 
 The LangID Service is a backend microservice that performs English vs French language detection and optional transcription for audio files. The service accepts audio via file upload or URL, runs a short probe autodetection pass using Whisper, applies a conservative EN/FR gate (including a music-only detector), optionally retries detection with a VAD-trimmed probe, and produces a structured JSON result persisted with the job record.
 
@@ -43,7 +43,7 @@ System boundaries:
 - Transcription: performed only when the gate accepts speech.
 - Results: structured `result_json` persisted in DB and returned by API.
 
-## B. Architecture
+## 2. Architecture
 
 High-level components:
 - API server: FastAPI application, job endpoints, health and metrics.
@@ -68,7 +68,7 @@ flowchart TD
   API --> Dashboard[Dashboard]
 ```
 
-## C. Full EN/FR Gate Pipeline
+## 3. Full EN/FR Gate Pipeline
 
 This section documents the gate behavior and configuration.
 
@@ -120,7 +120,7 @@ flowchart TD
 Gate outputs in `result_json`:
 - `gate_decision` (enum), `gate_meta` (detailed metadata), `music_only` (bool), `use_vad` (bool).
 
-## D. Whisper Model + GPU Details
+## 4. Whisper Model + GPU Details
 
 Supported models: `tiny`, `base`, `small`, `medium`, `large-v3`.
 
@@ -128,7 +128,52 @@ Device selection via `WHISPER_DEVICE`: `cpu`, `cuda`, or `auto`.
 `WHISPER_COMPUTE` controls precision: `int8`, `float16`, `float32`.
 
 Notes for Windows:
-- GPU support on Windows depends on drivers and the runtime (CTranslate2/ctranslate2 bindings). CPU-only operation is the most portable option on Windows Server.
+## 10. Windows Deployment
+
+We provide automated PowerShell scripts for deploying both the API service and the Dashboard on Windows Server.
+
+### 1. API Service (`nssm_install.ps1`)
+Located in `langid_service/scripts/windows/nssm_install.ps1`.
+
+**Features:**
+*   Auto-installs NSSM and Python (if missing).
+*   Creates a virtual environment and installs dependencies.
+*   Configures the service with proper environment variables.
+*   Supports custom cluster configuration.
+
+**Usage:**
+Run as Administrator:
+```powershell
+cd langid_service\scripts\windows
+.\nssm_install.ps1 -ServiceName "LangIdAPI" -Port 8080 -ClusterConfig "C:\path\to\cluster_config.json"
+```
+
+**Parameters:**
+*   `-ServiceName`: Name of the Windows service (default: `LangIdAPI`).
+*   `-Port`: Port to bind to (default: `8080`).
+*   `-ClusterConfig`: (Optional) Absolute path to your `cluster_config.json`.
+*   `-ModelSize`: Whisper model size (default: `base`).
+*   `-Device`: `cpu` or `cuda` (default: `cpu`).
+
+### 2. Dashboard (`Install-LangIdDashboard.ps1`)
+Located in `dashboard/launch-script/Install-LangIdDashboard.ps1`.
+
+**Features:**
+*   Auto-installs NVM and Node.js (if missing).
+*   Builds the React application (`npm run build`).
+*   Installs a lightweight static file server as a service.
+
+**Usage:**
+Run as Administrator:
+```powershell
+cd dashboard\launch-script
+.\Install-LangIdDashboard.ps1 -Port 3000
+```
+
+**Parameters:**
+*   `-ServiceName`: Name of the dashboard service (default: `LangIdDashboard`).
+*   `-Port`: Port to serve the dashboard on (default: `3000`).
+*   `-DashboardDir`: (Optional) Path to the dashboard source code. drivers and the runtime (CTranslate2/ctranslate2 bindings). CPU-only operation is the most portable option on Windows Server.
 - Very old GPUs (Pascal or earlier) may lack the required compute capability for optimized kernels.
 
 Recommended configurations:
@@ -141,11 +186,13 @@ Recommended configurations:
 
 If GPU is unsupported, set `WHISPER_DEVICE=cpu` and use `WHISPER_COMPUTE=int8` where CPU quantization is supported.
 
-## E. Worker System
+## 5. Worker System
 
 Worker behavior:
 - Each worker process polls the DB for queued jobs, claims a job, sets `status=processing`, and runs detection/transcription.
-- Concurrency settings: `MAX_WORKERS` controls process count; `MAX_CONCURRENT_JOBS` controls per-worker parallelism.
+- Each worker process polls the DB for queued jobs, claims a job, sets `status=processing`, and runs detection/transcription.
+- **Concurrency:** Each worker process handles exactly **one job at a time** (synchronously).
+- **Scaling:** Total system concurrency is determined by `MAX_WORKERS`. For example, `MAX_WORKERS=4` means 4 jobs can be processed in parallel.
 
 Job claim/update notes:
 - Use transactional DB updates to claim and update jobs. Prefer SQLite WAL mode for better concurrency.
@@ -163,7 +210,7 @@ flowchart LR
   DBResult --> API
 ```
 
-## F. Configuration (.env)
+## 6. Configuration (.env)
 
 Important environment variables and recommended defaults:
 
@@ -173,7 +220,7 @@ Important environment variables and recommended defaults:
 | `STORAGE_DIR` | `./storage` | Audio storage directory |
 | `DB_URL` | `sqlite:///./langid.sqlite` | SQLAlchemy DB URL |
 | `MAX_WORKERS` | `2` | Number of worker processes |
-| `MAX_CONCURRENT_JOBS` | `1` | Jobs per worker process |
+
 | `MAX_RETRIES` | `3` | Max retries per job |
 | `WHISPER_MODEL_SIZE` | `base` | Model size |
 | `WHISPER_DEVICE` | `auto` | `cpu` / `cuda` / `auto` |
@@ -191,7 +238,7 @@ Important environment variables and recommended defaults:
 
 Adjust these values in production according to CPU/GPU capacity and expected job volume.
 
-## G. API Reference
+## 7. API Reference
 
 Base URL: `http://<host>:<port>` (defaults to `http://0.0.0.0:8080`).
 
@@ -224,7 +271,7 @@ GET /metrics
 GET /healthz
 - Health check endpoint.
 
-## H. Storage + DB Layout
+## 8. Storage + DB Layout
 
 Storage structure:
 - `STORAGE_DIR/<job_id>/input.*` — uploaded or downloaded source audio.
@@ -233,35 +280,9 @@ Storage structure:
 
 SQLite job table fields (summary): `id`, `input_path`, `status`, `progress`, `result_json`, `created_at`, `updated_at`, `attempts`, `error`.
 
-## I. Installation & Running
 
-Linux quick start:
 
-```bash
-git clone https://github.com/<org>/LangId-mr.git /path/to/project
-cd /path/to/project/langid_service
-python -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-export WHISPER_DEVICE=auto
-export WHISPER_MODEL_SIZE=base
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8080
-```
-
-Production example with `gunicorn`:
-
-```bash
-gunicorn -w 4 -k uvicorn.workers.UvicornWorker "app.main:app" -b 0.0.0.0:8080
-```
-
-Windows Server (summary):
-- Install Python 3.11 and Node 20.
-- Create `.venv`, `pip install -r requirements.txt`.
-- Build the dashboard (`cd dashboard && npm ci && npm run build`) and set `public/config.js` accordingly.
-- Use NSSM or another service manager to register the API and optional static dashboard service.
-
-## J. Examples
+## 9. Examples
 
 Good English output:
 
@@ -314,18 +335,34 @@ To improve concurrency when multiple worker processes update the jobs table:
 2. **Why WAL helps**
    - Readers no longer block writers.
    - Writers mostly do not block readers.
-   - Greatly reduces `database is locked` errors under concurrent workers.
+1.  **Enable WAL mode**
+    SQLite journal mode can be enabled permanently by running:
 
-3. **Recommended worker tuning**
-   - Keep `MAX_WORKERS` low unless running on fast SSD.
-   - Typical stable config:
-     - `MAX_WORKERS=2`
-     - `MAX_CONCURRENT_JOBS=1`
+    ```bash
+    sqlite3 langid.sqlite "PRAGMA journal_mode=WAL;"
+    ```
+
+    Or ensure it is automatically applied in `_db_connect()`:
+
+    ```python
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout = 5000;")
+    ```
+
+2.  **Why WAL helps**
+    - Readers no longer block writers.
+    - Writers mostly do not block readers.
+    - Greatly reduces `database is locked` errors under concurrent workers.
+
+3.  **Recommended worker tuning**
+    - Keep `MAX_WORKERS` low unless running on fast SSD.
+    - Typical stable config:
+      - `MAX_WORKERS=2` (or set to number of CPU cores)
 
 - Use structured logs in `LOG_DIR` and expose Prometheus metrics for monitoring.
 
 
-## K. Internal HA Cluster Architecture
+## 11. Internal HA Cluster Architecture
 
 This section details the internal High Availability (HA) cluster architecture designed for Windows Server deployments where external load balancers are not available.
 
@@ -588,18 +625,14 @@ The dashboard aggregates data from the entire cluster.
 
 **Startup Procedure (Windows Server):**
 
-1.  **Deploy Code:** Copy the application code to `C:\LangID` on all servers.
-2.  **Configure:** Create `C:\LangID\cluster_config.json` on each server. Ensure `nodes` list is identical on all servers.
-3.  **Start Node A:**
-    ```powershell
-    $env:LANGID_CLUSTER_CONFIG_FILE="C:\LangID\cluster_config.json"
-    cd C:\LangID
-    # Run from the parent directory of langid_service or ensure it is in PYTHONPATH
-    # It is recommended to run from the root of the repository/deployment
-    .\.venv\Scripts\python.exe -m uvicorn langid_service.app.main:app --host 0.0.0.0 --port 8080
-    ```
-4.  **Start Node B & C:** Repeat step 3 on other nodes.
-5.  **Verify:**
+Please refer to **Section 10. Windows Deployment** for automated installation instructions using `nssm_install.ps1`.
+
+1.  **Deploy & Configure:**
+    *   Follow the instructions in Section 10 to install the service on each node.
+    *   Ensure `cluster_config.json` is created on all servers. The `nodes` list must be identical, but `self_name` must be unique for each server.
+    *   Pass the config path to the installer: `.\nssm_install.ps1 ... -ClusterConfig "C:\path\to\cluster_config.json"`
+
+2.  **Verify:**
     Open `http://node-a:8080/cluster/nodes` to confirm all nodes are "up".
 
 **Startup Procedure (macOS/Linux):**
@@ -662,7 +695,7 @@ The dashboard aggregates data from the entire cluster.
 
 
 
-## L. Prometheus Metrics and Monitoring
+## 12. Prometheus Metrics and Monitoring
 
 The service exposes Prometheus metrics for monitoring cluster health, job processing, and load distribution.
 
@@ -937,7 +970,7 @@ curl http://localhost:8080/cluster/local-metrics
 ```
 
 
-## M. Language Code Configuration
+## 13. Language Code Configuration
 
 You can configure the format of language codes returned by the API and displayed in the dashboard using the `LANG_CODE_FORMAT` environment variable.
 
