@@ -70,55 +70,430 @@ flowchart TD
 
 ## 3. Full EN/FR Gate Pipeline
 
-This section documents the gate behavior and configuration.
+This section describes, in excruciating detail, how the EN/FR gate turns an input audio file into a final decision:
 
-Autodetect probe
-- The probe is a short audio window decoded and passed to Whisper with `vad_filter=False` for the initial detection.
-- Whisper returns a transcript and a predicted language with probability.
+- **English speech**
+- **French speech**
+- **No speech / music only**
+- **Rejected / unsupported**
 
-Music-only detection (executed before acceptance checks)
-- Normalization: lowercase, remove matching outer brackets ([], (), {}), trim whitespace.
-- Replace musical Unicode markers (♪ ♫ ♩ ♬ ♭ ♯) with token `music`.
-- Tokenize and remove filler tokens (examples: `intro`, `outro`, `playing`, `background`, `soft`, `de`, `fond`, `only`, `song`, `theme`, `jingle`, `play`).
-- If remaining tokens contain only `music` or `musique` plus allowed fillers, short-circuit to `NO_SPEECH_MUSIC_ONLY` with `language = "none"`, `music_only = true`.
+The gate sits on top of **faster-whisper** and adds a layer of deterministic logic so that the system is explainable and can be tuned for different operating points (strict vs permissive).
 
-High-confidence accept
-- If autodetect probability >= `LANG_MID_UPPER` and predicted language is `en` or `fr`, accept immediately without VAD.
+At a high level the pipeline does the following:
 
-Mid-zone logic
-- If `LANG_MID_LOWER <= probability < LANG_MID_UPPER` and predicted language is `en` or `fr`, compute stopword ratios for EN and FR.
-- Heuristic: require `token_count >= LANG_MIN_TOKENS` and `dominant_ratio - other_ratio >= LANG_STOPWORD_MARGIN` and `dominant_ratio >= LANG_MIN_STOPWORD_{EN|FR}` to accept mid-zone.
+1. Load and normalize the audio.
+2. Run a **first-pass Whisper autodetect** on a probe window (no VAD).
+3. Normalize and tokenize the resulting transcript.
+4. Run a **music-only detector** over the transcript tokens.
+5. If not music-only, evaluate:
+   - **High-confidence autodetect accept** (fast path).
+   - **Mid-zone stopword heuristic** (EN vs FR based on token content).
+6. If still uncertain, run a **VAD-based retry** (Whisper on speech-only audio).
+7. If still uncertain and allowed, run a **fallback EN-vs-FR scorer**.
+8. If strict mode is enabled and nothing is confident enough, **reject**.
 
-VAD retry
-- If the mid-zone heuristic fails, or initial autodetect is below `LANG_MID_LOWER`, re-run detection using VAD-trimmed probe (`vad_filter=True`).
-- If VAD retry yields a confident EN/FR per `LANG_DETECT_MIN_PROB`, accept.
+The gate writes all intermediate decisions into `gate_decision`, `gate_meta`, `music_only`, and `use_vad` fields so that behavior is debuggable via logs and the API.
 
-Fallback scoring
-- If VAD retry is insufficient and `ENFR_STRICT_REJECT` is false, perform low-cost scoring/transcription for EN and FR and pick the better-scoring language (`method = fallback`). The fallback may not provide a calibrated probability.
+---
 
-Strict reject
-- If `ENFR_STRICT_REJECT` is true and no path produced a confident EN/FR decision, return HTTP 400 / Reject.
+### 3.1 Step 0 – Inputs and Configuration
 
-Mermaid decision-tree diagram:
+Each gate invocation receives:
+
+- A **job ID** and the path to the audio file in `STORAGE_DIR`.
+- A reference to a **loaded faster-whisper model**.
+- A **configuration object** built from environment variables, including:
+
+| Setting | Description |
+|--------|-------------|
+| `LANG_MID_LOWER` | Lower bound of the “mid-zone” probability band (e.g., 0.60). |
+| `LANG_MID_UPPER` | Upper bound of the “mid-zone” probability band (e.g., 0.79). |
+| `LANG_MIN_TOKENS` | Minimum number of tokens required to attempt mid-zone heuristics. |
+| `LANG_MIN_STOPWORD_EN` | Minimum EN stopword ratio to accept EN in mid-zone. |
+| `LANG_MIN_STOPWORD_FR` | Minimum FR stopword ratio to accept FR in mid-zone. |
+| `LANG_STOPWORD_MARGIN` | Minimum gap between dominant vs other stopword ratios. |
+| `LANG_DETECT_MIN_PROB` | Minimum probability to accept VAD-based autodetect. |
+| `ENFR_STRICT_REJECT` | If `true`, reject low-confidence / non-EN/FR audio instead of coercing it. |
+| `LANG_CODE_FORMAT` | How final language codes are formatted (ISO 639-1/2/3). |
+| Internal music keyword lists | Tokens such as `music`, `musique`, `intro`, `outro`, `playing`, `background`, `fond`, etc. |
+
+The gate **never modifies audio**; it only reads from `STORAGE_DIR` and produces a **pure JSON classification**.
+
+---
+
+### 3.2 Step 1 – Audio Loading and Probe Selection
+
+**Goal:** feed a representative but cheap slice of audio into Whisper for an initial read.
+
+1. **Audio load and normalization**
+   - The worker reads the input file (e.g., `input.wav`) from disk.
+   - Audio is converted to:
+     - **Single channel** (mono) by downmixing if needed.
+     - **Target sample rate** (typically 16 kHz), resampling if necessary.
+   - The gate uses the normalized waveform internally as a NumPy array / tensor of floating-point samples in the range `[-1.0, 1.0]`.
+
+2. **Probe window selection**
+   - The gate takes a **probe segment** of fixed maximum duration (e.g., a few seconds) from the start of the file.
+   - Very long assets (e.g., 60+ seconds) are truncated to reduce latency.
+   - The probe segment may optionally be written as `probe.wav` to the job directory for debugging.
+
+The probe audio is what is passed into Whisper for the **first-pass autodetect**.
+
+---
+
+### 3.3 Step 2 – First-Pass Whisper Autodetect (No VAD)
+
+**Goal:** obtain a language probability distribution and a raw text transcript from the probe.
+
+1. **faster-whisper invocation**
+   - The gate calls the model in **transcription mode**:
+     - `task = "transcribe"`
+     - `language = None` (enable Whisper’s built-in language identification).
+     - **No VAD filter** (`vad_filter = False` or equivalent).
+   - Under the hood, faster-whisper:
+     - Splits the audio into frames.
+     - Extracts **log-mel spectrograms** from the waveform.
+     - Feeds the spectrogram into the encoder-decoder architecture.
+     - Runs a beam search decoder to generate text tokens.
+     - Computes a **language probability vector** over all supported languages.
+
+2. **Outputs from faster-whisper**
+   - `segments`: list of time-stamped text segments (`start`, `end`, `text`).
+   - `language_probs`: mapping from language code → probability (e.g., `"en": 0.88`, `"fr": 0.10`, …).
+   - `language`: Whisper’s best-guess language code (e.g., `"en"`, `"fr"`, `"es"`, …).
+
+3. **Autodetect summary used by the gate**
+   - `autodetect_lang`: best-guess language from `language`.
+   - `autodetect_prob`: `language_probs[autodetect_lang]`.
+   - `autodetect_transcript`: concatenation of `segments[*].text` into a single string.
+
+All subsequent logic (music detector, mid-zone heuristic, VAD retry, etc.) is built on top of this initial `(lang, prob, transcript)` triple.
+
+---
+
+### 3.4 Step 3 – Transcript Normalization and Tokenization
+
+**Goal:** transform Whisper’s free-form text into a normalized token stream suitable for music detection and EN/FR stopword analysis.
+
+1. **Unicode normalization**
+   - Apply a standard normalization such as **NFKC** so that:
+     - Combined characters (e.g., “é”) and decomposed forms are treated identically.
+     - Compatibility characters (e.g., certain typographic quotes) become canonical forms.
+
+2. **Case + whitespace normalization**
+   - Convert the entire transcript to **lowercase** using a Unicode-aware routine.
+   - Collapse any run of whitespace characters into a single ASCII space.
+   - Trim leading and trailing whitespace.
+
+3. **Bracket and caption marker handling**
+   - If the transcript is wrapped in common caption-style markers (e.g., `[OUTRO MUSIC PLAYING]`, `(music)`, `{musique}`), the gate strips only the **outermost** brackets while preserving inner content.
+   - Nested or repeated markers are normalized so the inner phrase is what gets tokenized.
+
+4. **Music glyph expansion**
+   - Replace any explicit music symbols by the literal token `music`, including:
+     - `♪`, `♫`, `♩`, `♬`, `♭`, `♯`, and similar glyphs.
+   - Example:
+     - Raw text: `"[♪ OUTRO MUSIC PLAYING ♪]"`  
+     - Normalized: `"music outro music playing music"`
+
+5. **Tokenization**
+   - Split on whitespace and simple punctuation boundaries.
+   - Drop empty tokens; keep alphanumeric words and the synthetic `music` token.
+   - Example:
+     - Normalized text: `"music outro music playing music"`
+     - Tokens: `["music", "outro", "music", "playing", "music"]`
+
+6. **Preparation for stopword analysis**
+   - The normalized tokens are later classified as:
+     - **EN stopwords** (e.g., `the`, `and`, `for`, `is`, `to`, `of`, …).
+     - **FR stopwords** (e.g., `le`, `la`, `et`, `de`, `pour`, `est`, …).
+     - **Lexical content words** (everything else).
+   - This enables approximate language dominance estimation (EN vs FR) independent of Whisper’s internal language scores.
+
+The result of this step is:
+
+- `norm_text`: normalized transcript.
+- `tokens`: normalized token sequence.
+
+These are fed into both the **music-only detector** and the **mid-zone heuristic**.
+
+---
+
+### 3.5 Step 4 – Music-Only Detector (Short-Circuit)
+
+**Goal:** detect assets that are **background music only** (no usable spoken EN/FR content) and classify them as such, even if Whisper’s language autodetect leans toward EN/FR.
+
+1. **Token classification**
+   - The gate partitions `tokens` into three sets:
+     - **Core music tokens** – words that explicitly indicate music:
+       - Examples: `music`, `musique`, `instrumental`, `jingle`, `theme`, `thème`.
+     - **Music-related filler tokens** – words that describe how music is used:
+       - Examples: `intro`, `outro`, `playing`, `background`, `fond`, `soft`, `only`.
+     - **Other tokens** – any lexical content that is not clearly about music:
+       - Examples: `anthony`, `réseau`, `hello`, `bonjour`, `extraordinary`.
+
+2. **Music-only predicate**
+   - Let:
+     - `core_count` = number of core music tokens.
+     - `other_count` = number of “other” tokens.
+   - The audio is classified as **music only** if:
+     - `core_count >= 1` **and**
+     - `other_count == 0` (after ignoring purely punctuational artifacts).
+
+   In words: the transcript talks only about music, not about semantic content.
+
+3. **Music-only classification**
+   - If the predicate passes:
+     - `gate_decision = "NO_SPEECH_MUSIC_ONLY"`
+     - `music_only = true`
+     - `language = "none"` (or equivalent sentinel; formatted per `LANG_CODE_FORMAT` if applicable).
+     - `probability` may be set to `0.0` or left as `autodetect_prob` for debugging; the decision is not “English vs French” but “no speech”.
+     - `detection_method = "autodetect"` (or `"autodetect-vad"` if the decision occurred after a VAD retry).
+   - The gate **short-circuits** here: no mid-zone, no fallback. Downstream code and clients can reliably treat this as “this is music, not speech”.
+
+4. **Failure of music-only predicate**
+   - If `other_count > 0` (i.e., there are lexical tokens beyond music markers), the asset is **not** treated as pure music, and the gate proceeds to language-based logic.
+
+This step is what prevents background-music-only assets with captions like `[OUTRO MUSIC PLAYING]` from being incorrectly classified as English or French.
+
+---
+
+### 3.6 Step 5 – High-Confidence Autodetect Accept
+
+If the asset is **not** music-only, the next step is to see whether Whisper’s first-pass autodetect is confident enough to accept as-is without further work.
+
+1. **Inputs**
+   - `autodetect_lang` – best-guess language (e.g., `"en"`, `"fr"`, `"es"`).
+   - `autodetect_prob` – probability assigned to `autodetect_lang`.
+   - Threshold: `LANG_MID_UPPER`.
+
+2. **Checks**
+   - Only EN and FR are acceptable:
+     - If `autodetect_lang` is not `"en"` or `"fr"`, the gate **cannot** accept here and must continue to the next step.
+   - High-confidence threshold:
+     - If `autodetect_prob >= LANG_MID_UPPER` and `autodetect_lang ∈ { "en", "fr" }`, the sample is considered **high-confidence**.
+
+3. **Decision**
+   - When the threshold is met:
+     - `gate_decision = "ACCEPT_AUTODETECT"`
+     - `music_only = false`
+     - `language` is set to EN or FR, converted to the configured `LANG_CODE_FORMAT` (e.g., `"en"` → `"eng"` for ISO 639-3).
+     - `probability = autodetect_prob`
+     - `detection_method = "autodetect"`
+     - `use_vad = false`
+   - This is the **fast path**: most clean English/French recordings should be accepted here without VAD or heuristics.
+
+If the gate cannot accept here (either low probability or non-EN/FR language), it moves into the **mid-zone heuristic**.
+
+---
+
+### 3.7 Step 6 – Mid-Zone Stopword Heuristic (EN vs FR)
+
+The mid-zone is the “uncertain but not hopeless” region:
+
+- `LANG_MID_LOWER <= autodetect_prob < LANG_MID_UPPER`, and
+- `autodetect_lang ∈ { "en", "fr" }`.
+
+In this region the model thinks it’s likely EN or FR, but not strongly enough to trust blindly. The gate therefore uses a **stopword-based heuristic** on the tokenized transcript.
+
+1. **Token count requirement**
+   - Let `token_count = len(tokens)`.
+   - If `token_count < LANG_MIN_TOKENS`, the transcript is considered too short to reliably assess EN vs FR by stopwords.
+   - In that case the mid-zone heuristic is **skipped**, and the pipeline proceeds directly to **VAD retry**.
+
+2. **Stopword sets**
+   - Two curated lists of high-frequency words are used:
+     - `EN_STOPWORDS` – e.g., `the`, `and`, `for`, `is`, `to`, `of`, `in`, `on`, `with`, `that`, etc.
+     - `FR_STOPWORDS` – e.g., `le`, `la`, `les`, `et`, `de`, `du`, `des`, `pour`, `est`, `que`, `qui`, etc.
+   - These are **not** full dictionaries; they are heuristics to detect language dominance.
+
+3. **Stopword counting**
+   - For each token in `tokens`:
+     - If token ∈ `EN_STOPWORDS`, increment `en_stopword_count`.
+     - If token ∈ `FR_STOPWORDS`, increment `fr_stopword_count`.
+   - Compute ratios:
+     - `stopword_ratio_en = en_stopword_count / max(token_count, 1)`
+     - `stopword_ratio_fr = fr_stopword_count / max(token_count, 1)`
+
+4. **Dominant language and margin**
+   - Determine which language is dominant:
+     - If `stopword_ratio_en >= stopword_ratio_fr`, dominant language = EN.
+     - Else dominant language = FR.
+   - Let:
+     - `dominant_ratio` = max(`stopword_ratio_en`, `stopword_ratio_fr`)
+     - `other_ratio` = min(`stopword_ratio_en`, `stopword_ratio_fr`)
+
+5. **Heuristic thresholds**
+   - For EN dominance:
+     - Require `dominant_ratio >= LANG_MIN_STOPWORD_EN`.
+   - For FR dominance:
+     - Require `dominant_ratio >= LANG_MIN_STOPWORD_FR`.
+   - Additionally, enforce a margin:
+     - `dominant_ratio - other_ratio >= LANG_STOPWORD_MARGIN`.
+
+   Intuition: the transcript should clearly “look” more like English or French, not just barely.
+
+6. **Decision**
+   - If the heuristic passes:
+     - `gate_decision = "ACCEPT_MID_ZONE"`
+     - `language` = dominant language (mapped with `LANG_CODE_FORMAT`).
+     - `music_only = false`
+     - `use_vad = false`
+     - `detection_method = "autodetect"`
+   - If it fails (e.g., not enough tokens, ratios too close, or below thresholds), the gate does **not** decide here and moves to **VAD retry**.
+
+---
+
+### 3.8 Step 7 – VAD Retry (Speech-Only Autodetect)
+
+If neither the high-confidence path nor the mid-zone heuristic produced a stable EN/FR label, the gate attempts to improve the signal-to-noise ratio by applying **Voice Activity Detection (VAD)** and re-running Whisper.
+
+1. **VAD preprocessing**
+   - The same original audio is passed through a VAD module with parameters such as:
+     - `threshold` – minimum probability/energy to consider a frame as speech.
+     - `min_speech_duration_ms` – minimum contiguous speech region duration.
+     - `min_silence_duration_ms` – minimum silence between speech regions.
+     - `speech_pad_ms` – padding added around detected speech segments.
+   - Non-speech regions (e.g., background music, long silences) are removed, producing a shorter “speech-only” waveform.
+   - The gate records this in `gate_meta.vad_used = true` and may log `duration_after_vad` vs original `duration`.
+
+2. **Second-pass Whisper call**
+   - The gate runs faster-whisper again, this time on the **VAD-trimmed** audio:
+     - `task = "transcribe"`
+     - `language = None` (autodetect again).
+     - Either `vad_filter = True` or equivalent logic where pre-trimmed audio is supplied.
+   - Outputs:
+     - `vad_lang` – best-guess language on the speech-only audio.
+     - `vad_prob` – probability corresponding to `vad_lang`.
+     - `vad_transcript` – text produced from VAD-trimmed audio.
+
+3. **Optional music-only re-check (implementation detail)**
+   - The normalized `vad_transcript` can be run through the **same music-only detector** as in Step 4:
+     - This is useful for assets where only music segments survive, or where Whisper transcribes e.g. `[OUTRO MUSIC PLAYING]` after VAD.
+   - If that check passes, the gate again short-circuits with:
+     - `gate_decision = "NO_SPEECH_MUSIC_ONLY"`
+     - `music_only = true`
+     - `use_vad = true`
+     - `detection_method = "autodetect-vad"`
+
+4. **VAD-based EN/FR accept**
+   - If `vad_lang ∈ { "en", "fr" }` **and** `vad_prob >= LANG_DETECT_MIN_PROB`:
+     - `gate_decision = "ACCEPT_AUTODETECT_VAD"`
+     - `language` = `vad_lang` (formatted per `LANG_CODE_FORMAT`).
+     - `probability = vad_prob`
+     - `music_only = false`
+     - `use_vad = true`
+     - `detection_method = "autodetect-vad"`
+
+5. **If still inconclusive**
+   - If VAD-based autodetect is not confident (e.g., low probability, non-EN/FR label, empty transcript), the gate proceeds to **fallback scoring** (if allowed) or **strict reject**.
+
+---
+
+### 3.9 Step 8 – Fallback Scoring (Optional EN vs FR Coercion)
+
+If VAD retry is inconclusive **and** `ENFR_STRICT_REJECT` is `false`, the gate is allowed to **coerce** the decision into EN or FR by running two constrained “what if” decodes.
+
+1. **Constrained decodes**
+   - The gate runs two short transcription passes (or scoring passes) using `faster-whisper`:
+     - One with `language = "en"`.
+     - One with `language = "fr"`.
+   - Each pass computes an internal score (e.g., log-likelihood, normalized by token length, or other scalar quality measure).
+
+2. **Score comparison**
+   - Let `score_en` be the score for the EN-constrained decode.
+   - Let `score_fr` be the score for the FR-constrained decode.
+   - The gate compares the two:
+     - If `score_en - score_fr` exceeds an internal margin, EN is chosen.
+     - If `score_fr - score_en` exceeds the margin, FR is chosen.
+     - If neither is clearly better, fallback is considered **inconclusive**.
+
+3. **Decision**
+   - If one language is clearly better:
+     - `gate_decision = "ACCEPT_FALLBACK_EN"` or `"ACCEPT_FALLBACK_FR"`.
+     - `language` is set to the chosen language (formatted per `LANG_CODE_FORMAT`).
+     - `probability` may be synthesized or carried over from earlier stages, but is considered less calibrated than autodetect probabilities.
+     - `music_only = false`
+     - `detection_method = "fallback"`
+   - If the fallback cannot distinguish EN vs FR, control passes to **strict reject** logic.
+
+---
+
+### 3.10 Step 9 – Strict Reject
+
+Finally, the gate decides whether it is allowed to output **“none / rejected”** instead of forcing an EN/FR label.
+
+1. **When strict reject is enabled**
+   - If `ENFR_STRICT_REJECT = true` and no previous step yielded an acceptable EN/FR or music-only classification:
+     - The gate raises a **validation-style failure** that may surface as:
+       - HTTP 400 error on API endpoints, or
+       - A `gate_decision = "REJECT"` with `language = "none"` in internal flows.
+   - Typical reasons:
+     - Very low language probability in both autodetect passes.
+     - Whisper consistently returns a non-EN/FR language (e.g., Spanish).
+     - Fallback scores for EN and FR are both poor or indistinguishable.
+
+2. **When strict reject is disabled**
+   - If `ENFR_STRICT_REJECT = false`, the gate prefers to emit **some** EN/FR label:
+     - It may fall back to the best of autodetect, VAD, or fallback scoring, even if the probability is modest.
+     - This is useful in environments where downstream systems expect a label for every asset and will handle low-confidence cases separately.
+
+---
+
+### 3.11 Gate Result and JSON Fields
+
+Regardless of the path taken, the gate produces a **single, final result** that is stored in the database and served by the API:
+
+Key fields in `result_json`:
+
+- `language` – `"en"`, `"fr"`, `"none"` (mapped to configured `LANG_CODE_FORMAT`).
+- `probability` – model probability for autodetect-based decisions, or a synthetic/confidence-like value for fallback.
+- `detection_method` – `"autodetect"`, `"autodetect-vad"`, `"fallback"`, etc.
+- `gate_decision` – symbolic label such as:
+  - `"ACCEPT_AUTODETECT"`, `"ACCEPT_MID_ZONE"`, `"ACCEPT_AUTODETECT_VAD"`, `"ACCEPT_FALLBACK_EN"`, `"ACCEPT_FALLBACK_FR"`, `"NO_SPEECH_MUSIC_ONLY"`, `"REJECT"`.
+- `music_only` – boolean flag indicating pure music / no speech.
+- `use_vad` – `true` if the final decision came from a VAD-trimmed pass.
+- `gate_meta` – structured metadata including:
+  - `mid_zone` (bool), `stopword_ratio_en`, `stopword_ratio_fr`, `token_count`.
+  - `vad_used`, `duration`, `duration_after_vad`.
+  - Internal thresholds used and any debug flags.
+
+This structure allows you to trace exactly **why** a particular file was labeled as English, French, music, or rejected.
+
+---
+
+### 3.12 Gate Decision Flow (Mermaid Diagram)
+
+The following diagram summarizes the overall control flow of the gate:
 
 ```mermaid
 flowchart TD
-  Probe[Probe transcript] --> MusicCheck[Music-only check]
-  MusicCheck -->|yes| MusicFlag[NO_SPEECH_MUSIC_ONLY - music_only=true]
-  MusicCheck -->|no| Detect[Autodetect probe]
-  Detect -->|p >= LANG_MID_UPPER| AcceptHigh[ACCEPT_AUTODETECT]
-  Detect -->|LANG_MID_LOWER <= p < LANG_MID_UPPER| MidZone[Mid-zone heuristics]
-  MidZone -->|heuristic pass| AcceptMid[ACCEPT_MID_ZONE]
-  MidZone -->|heuristic fail| VADRetry[VAD retry]
-  Detect -->|p < LANG_MID_LOWER OR lang not en/fr| VADRetry
-  VADRetry -->|confident| AcceptVAD[ACCEPT_AUTODETECT_VAD]
-  VADRetry -->|not confident| Fallback[Fallback scoring]
-  Fallback --> AcceptFallback[ACCEPT_FALLBACK]
-  VADRetry -->|reject and strict| Reject[REJECT HTTP 400]
+    A["Audio file + config"] --> B["Probe with Whisper - no VAD"]
+    B --> C["Normalize transcript and tokenize"]
+    C --> D{"Music-only?"}
+    D -->|Yes| M["NO_SPEECH_MUSIC_ONLY\nlanguage=none\nmusic_only=true"]
+    D -->|No| E{"High-confidence EN/FR?"}
+    E -->|Yes| H["ACCEPT_AUTODETECT"]
+    E -->|No| F{"Mid-zone band?"}
+    F -->|No| G["VAD retry"]
+    F -->|Yes| F1{"Enough tokens?"}
+    F1 -->|No| G
+    F1 -->|Yes| F2{"Stopword heuristic"}
+    F2 -->|Pass| H2["ACCEPT_MID_ZONE"]
+    F2 -->|Fail| G
+    G --> G1["Run VAD and build speech-only audio"]
+    G1 --> G2["Whisper autodetect on VAD audio"]
+    G2 --> G3{"Music-only after VAD?"}
+    G3 -->|Yes| M2["NO_SPEECH_MUSIC_ONLY\nuse_vad=true"]
+    G3 -->|No| G4{"Confident EN/FR after VAD?"}
+    G4 -->|Yes| H3["ACCEPT_AUTODETECT_VAD"]
+    G4 -->|No| I{"Strict reject enabled?"}
+    I -->|Yes| J["REJECT or ERROR"]
+    I -->|No| K["Fallback scoring EN vs FR"]
+    K --> K1{"Clear winner?"}
+    K1 -->|Yes| L["ACCEPT_FALLBACK_EN/FR"]
+    K1 -->|No| J
 ```
-
-Gate outputs in `result_json`:
-- `gate_decision` (enum), `gate_meta` (detailed metadata), `music_only` (bool), `use_vad` (bool).
 
 ## 4. Whisper Model + GPU Details
 

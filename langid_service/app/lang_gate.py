@@ -60,6 +60,8 @@ MID_EN_MIN_STOPWORD_RATIO = float(os.getenv("LANG_MIN_STOPWORD_EN", 0.15))
 MID_FR_MIN_STOPWORD_RATIO = float(os.getenv("LANG_MIN_STOPWORD_FR", 0.15))
 STOPWORD_MARGIN = float(os.getenv("LANG_STOPWORD_MARGIN", 0.05))
 MIN_TOKENS_FOR_HEURISTIC = int(os.getenv("LANG_MIN_TOKENS", 10))
+MIN_TOKENS_FOR_SPEECH = int(os.getenv("LANG_MIN_TOKENS_SPEECH", "6"))
+MIN_STOPWORD_FOR_SPEECH = float(os.getenv("LANG_MIN_STOPWORD_SPEECH", "0.10"))
 
 TOKEN_SPLIT_RE = re.compile(r"[^\w']+", re.UNICODE)
 
@@ -295,20 +297,41 @@ def detect_lang_en_fr_only(audio: np.ndarray) -> Dict[str, Any]:
 
     if detected_lang in ALLOWED_LANGS:
         if prob_value >= MID_UPPER:
+            dominant_ratio = max(en_ratio, fr_ratio)
+            if (
+                token_count >= MIN_TOKENS_FOR_SPEECH
+                and dominant_ratio >= MIN_STOPWORD_FOR_SPEECH
+            ):
+                logger.info(
+                    "Autodetect high confidence with speechy transcript: "
+                    "lang=%s p=%.2f tokens=%d en_ratio=%.2f fr_ratio=%.2f",
+                    detected_lang,
+                    prob_value,
+                    token_count,
+                    en_ratio,
+                    fr_ratio,
+                )
+                metrics.LANGID_AUTODETECT_ACCEPT.inc()
+                return _build_gate_result(
+                    language=detected_lang,
+                    probability=probability,
+                    method="autodetect",
+                    gate_decision="accepted_high_conf",
+                    use_vad=False,
+                    en_ratio=en_ratio,
+                    fr_ratio=fr_ratio,
+                    token_count=token_count,
+                    music_only=False,
+                )
+
             logger.info(
-                f"Autodetect high confidence: lang={detected_lang}, p={prob_value:.2f} (>= {MID_UPPER:.2f})"
-            )
-            metrics.LANGID_AUTODETECT_ACCEPT.inc()
-            return _build_gate_result(
-                language=detected_lang,
-                probability=probability,
-                method="autodetect",
-                gate_decision="accepted_high_conf",
-                use_vad=False,
-                en_ratio=en_ratio,
-                fr_ratio=fr_ratio,
-                token_count=token_count,
-                music_only=False,
+                "High prob but transcript not speechy enough "
+                "(p=%.2f, tokens=%d, en_ratio=%.2f, fr_ratio=%.2f); "
+                "skipping high-conf accept and retrying with VAD.",
+                prob_value,
+                token_count,
+                en_ratio,
+                fr_ratio,
             )
 
         if prob_value >= MID_LOWER and detected_lang in {"en", "fr"}:
@@ -366,6 +389,28 @@ def detect_lang_en_fr_only(audio: np.ndarray) -> Dict[str, Any]:
         f"detect(probe, VAD): autodetect={detected_lang_vad} p={prob_vad_value:.2f}"
     )
 
+    transcript_vad_parts = [
+        getattr(seg, "text", "") for seg in segments_vad if getattr(seg, "text", "")
+    ]
+    transcript_vad = " ".join(transcript_vad_parts)
+
+    if is_music_only_transcript(transcript_vad):
+        logger.info(
+            "VAD transcript indicates background music only; "
+            "classifying as NO_SPEECH_MUSIC_ONLY."
+        )
+        return _build_gate_result(
+            language="none",
+            probability=probability_vad,
+            method="autodetect-vad",
+            gate_decision="NO_SPEECH_MUSIC_ONLY",
+            use_vad=True,
+            en_ratio=0.0,
+            fr_ratio=0.0,
+            token_count=len(tokenize_text(transcript_vad)),
+            music_only=True,
+        )
+    
     if detected_lang_vad in ALLOWED_LANGS and prob_vad_value >= LANG_DETECT_MIN_PROB:
         logger.info(
             f"Autodetect successful [via VAD]: lang={detected_lang_vad}, p={prob_vad_value:.2f} (threshold={LANG_DETECT_MIN_PROB:.2f})"
