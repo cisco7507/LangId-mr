@@ -55,7 +55,13 @@ app.add_middleware(
 
 # Configure logging
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-logger.add((LOG_DIR / "service.log").as_posix(), rotation="10 MB", retention=10, level="INFO")
+log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+logger.add(
+    (LOG_DIR / "service.log").as_posix(),
+    rotation="10 MB",
+    retention=10,
+    level=log_level,
+)
 
 # Init database
 Base.metadata.create_all(bind=engine)

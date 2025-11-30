@@ -16,7 +16,11 @@ dummy_audio = np.random.rand(16000 * 5)
 @patch("langid_service.app.lang_gate.get_model")
 def test_detect_autodetect_accepts_en(mock_get_model):
     mock_model = MagicMock()
-    mock_model.transcribe.return_value = ([], MagicMock(language="en", language_probability=0.9))
+    en_transcript = "the quick brown fox jumps over the lazy dog while we talk about the weather"
+    mock_model.transcribe.return_value = (
+        [SimpleNamespace(text=en_transcript)],
+        SimpleNamespace(language="en", language_probability=0.9),
+    )
     mock_get_model.return_value = mock_model
 
     result = detect_lang_en_fr_only(dummy_audio)
@@ -31,7 +35,11 @@ def test_detect_autodetect_accepts_en(mock_get_model):
 @patch("langid_service.app.lang_gate.get_model")
 def test_detect_autodetect_accepts_fr(mock_get_model):
     mock_model = MagicMock()
-    mock_model.transcribe.return_value = ([], MagicMock(language="fr", language_probability=0.9))
+    fr_transcript = "bonjour je parle francais avec mes amis et nous discutons souvent de musique"
+    mock_model.transcribe.return_value = (
+        [SimpleNamespace(text=fr_transcript)],
+        SimpleNamespace(language="fr", language_probability=0.9),
+    )
     mock_get_model.return_value = mock_model
 
     result = detect_lang_en_fr_only(dummy_audio)
