@@ -1,41 +1,29 @@
 #!/usr/bin/env bash
-#
-# test_langid_stability.sh
-#
-# For each audio file in a directory, submit it N times to the LangID API,
-# collect /jobs/{id}/result, and report per-file consistency.
-#
-# Requires: bash, curl, jq
-#
-
 set -euo pipefail
 
+# Defaults
 API_BASE_URL="http://localhost:8080"
 RUNS=10
+POLL_INTERVAL=5
+TIMEOUT=600
 DIR=""
-EXT="wav"
-POLL_INTERVAL=3       # seconds
-TIMEOUT=600           # seconds
 
 usage() {
   cat <<EOF
-Usage:
-  $(basename "$0") -d /path/to/dir [-n RUNS] [-u API_BASE_URL] [-e EXT]
+Usage: $(basename "$0") -d DIR [-n RUNS] [-a API_BASE_URL] [-p POLL_INTERVAL] [-t TIMEOUT]
 
-Options:
-  -d, --dir     Directory containing audio files (required)
-  -n, --runs    Number of runs per file (default: ${RUNS})
-  -u, --url     LangID API base URL (default: ${API_BASE_URL})
-  -e, --ext     File extension to test (default: ${EXT}, e.g. wav)
+  -d, --dir DIR           Directory containing audio files (required)
+  -n, --runs N            Number of runs per file (default: ${RUNS})
+  -a, --api URL           LangID API base URL (default: ${API_BASE_URL})
+  -p, --poll-interval SEC Poll interval in seconds (default: ${POLL_INTERVAL})
+  -t, --timeout SEC       Timeout per file in seconds (default: ${TIMEOUT})
 
 Example:
-  $(basename "$0") -d /Users/gsp/audio -n 20 -u http://localhost:8080
+  $(basename "$0") -d /path/to/wavs -n 10 -a http://localhost:8080
 EOF
 }
 
-# ─────────────────────────────────────────────────────────────
-# Parse arguments
-# ─────────────────────────────────────────────────────────────
+# ----------------- ARG PARSING -----------------
 if [[ $# -eq 0 ]]; then
   usage
   exit 1
@@ -51,12 +39,16 @@ while [[ $# -gt 0 ]]; do
       RUNS="$2"
       shift 2
       ;;
-    -u|--url)
+    -a|--api)
       API_BASE_URL="$2"
       shift 2
       ;;
-    -e|--ext)
-      EXT="$2"
+    -p|--poll-interval)
+      POLL_INTERVAL="$2"
+      shift 2
+      ;;
+    -t|--timeout)
+      TIMEOUT="$2"
       shift 2
       ;;
     -h|--help)
@@ -72,97 +64,41 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${DIR}" ]]; then
-  echo "ERROR: directory (-d / --dir) is required." >&2
+  echo "ERROR: -d|--dir is required." >&2
   usage
   exit 1
 fi
 
 if [[ ! -d "${DIR}" ]]; then
-  echo "ERROR: directory '${DIR}' does not exist." >&2
+  echo "ERROR: Directory does not exist: ${DIR}" >&2
   exit 1
 fi
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "ERROR: jq is required but not installed. Install jq and try again." >&2
+# ----------------- DISCOVER FILES -----------------
+shopt -s nullglob
+files=( "${DIR}"/*.wav "${DIR}"/*.mp3 "${DIR}"/*.m4a )
+shopt -u nullglob
+
+if (( ${#files[@]} == 0 )); then
+  echo "No audio files found in ${DIR} (looked for *.wav, *.mp3, *.m4a)" >&2
   exit 1
 fi
 
-echo "LangID stability test"
-echo "  Directory   : ${DIR}"
-echo "  Extension   : .${EXT}"
-echo "  Runs / file : ${RUNS}"
-echo "  API base    : ${API_BASE_URL}"
+echo "Directory        : ${DIR}"
+echo "API base URL     : ${API_BASE_URL}"
+echo "Runs per file    : ${RUNS}"
+echo "Poll interval    : ${POLL_INTERVAL}s"
+echo "Timeout per file : ${TIMEOUT}s"
+echo "Found ${#files[@]} audio file(s):"
+for f in "${files[@]}"; do
+  echo "  - $(basename "$f")"
+done
 echo
 
-# Track summary across files
 SUMMARY_LINES=()
+MD_REPORT=""
 
-# ─────────────────────────────────────────────────────────────
-# Helper: submit a single file, poll until done, fetch /result
-# Returns JSON on stdout.
-# ─────────────────────────────────────────────────────────────
-submit_and_get_result() {
-  local file="$1"
-
-  # 1) Submit job
-  local submit_resp
-  submit_resp=$(curl -s -X POST -F "file=@${file}" "${API_BASE_URL}/jobs")
-
-  local job_id
-  job_id=$(echo "${submit_resp}" | jq -r '.job_id // empty')
-
-  if [[ -z "${job_id}" ]]; then
-    echo "ERROR: Failed to get job_id from submit response: ${submit_resp}" >&2
-    return 1
-  fi
-
-  # 2) Poll status
-  local start_ts
-  start_ts=$(date +%s)
-
-  local status="queued"
-  local status_resp
-
-  while :; do
-    sleep "${POLL_INTERVAL}"
-
-    status_resp=$(curl -s "${API_BASE_URL}/jobs?job_id=${job_id}")
-    status=$(echo "${status_resp}" | jq -r '.jobs[0].status // empty')
-
-    if [[ "${status}" == "succeeded" || "${status}" == "failed" || "${status}" == "error" ]]; then
-      break
-    fi
-
-    local now_ts
-    now_ts=$(date +%s)
-    if (( now_ts - start_ts > TIMEOUT )); then
-      echo "ERROR: Timeout waiting for job ${job_id}" >&2
-      return 1
-    fi
-  done
-
-  if [[ "${status}" != "succeeded" ]]; then
-    echo "ERROR: Job ${job_id} ended with status=${status}" >&2
-    return 1
-  fi
-
-  # 3) Get final result
-  local result_json
-  result_json=$(curl -s "${API_BASE_URL}/jobs/${job_id}/result")
-  echo "${result_json}"
-}
-
-# ─────────────────────────────────────────────────────────────
-# Main per-file loop
-# ─────────────────────────────────────────────────────────────
-shopt -s nullglob
-files=( "${DIR}"/*.${EXT} )
-
-if [[ ${#files[@]} -eq 0 ]]; then
-  echo "No .${EXT} files found in ${DIR}" >&2
-  exit 1
-fi
-
+# ----------------- MAIN LOOP PER FILE -----------------
 for file in "${files[@]}"; do
   basename=$(basename "${file}")
   echo "============================================================"
@@ -174,31 +110,151 @@ for file in "${files[@]}"; do
   printf "%-4s %-36s %-15s %-11s %-18s %-10s %-10s %s\n" \
     "----" "------------------------------------" "--------------" "-----------" "------------------" "----------" "----------" "-----------------"
 
-  # Baseline fields from run #1
+  # Baseline fields from the first successful run
   base_language=""
   base_gate_decision=""
   base_pipeline=""
   base_music_only=""
   base_detection_method=""
+  baseline_initialized=0
 
   file_inconsistent=0
 
+  # Arrays to track jobs and results
+  declare -a job_ids
+  declare -a statuses
+  declare -a finished
+  declare -a results_json
+
+  echo "Submitting ${RUNS} jobs for ${basename} (in parallel)..."
+
+  # Arrays to track submit pids and temp files for responses
+  declare -a submit_pids
+  declare -a submit_tmpfiles
+
   for (( i=1; i<=RUNS; i++ )); do
-    # Submit & fetch result JSON
-    result_json=$(submit_and_get_result "${file}") || {
-      printf "%-4s %-36s %-15s %-11s %-18s %-10s %-10s %s\n" \
-        "${i}" "ERROR" "-" "-" "-" "-" "-" "submission/poll failed"
+    tmpfile=$(mktemp)
+    submit_tmpfiles[i]="${tmpfile}"
+
+    # Fire-and-forget submit; response is captured to a temp file
+    curl -s -X POST -F "file=@${file}" "${API_BASE_URL}/jobs" > "${tmpfile}" &
+    submit_pids[i]=$!
+  done
+
+  # Wait for all submit calls to finish, then parse responses
+  for (( i=1; i<=RUNS; i++ )); do
+    pid="${submit_pids[i]:-}"
+    tmpfile="${submit_tmpfiles[i]:-}"
+
+    if [[ -n "${pid}" ]]; then
+      wait "${pid}" || true
+    fi
+
+    if [[ -z "${tmpfile}" || ! -f "${tmpfile}" ]]; then
+      echo "ERROR: Missing submit response for run #${i}" >&2
+      job_ids[i]=""
+      statuses[i]="submit_error"
+      finished[i]=1
       file_inconsistent=1
       continue
-    }
+    fi
 
-    job_id=$(echo "${result_json}"         | jq -r '.job_id // "-"')
-    language=$(echo "${result_json}"       | jq -r '.language // "none"')
-    prob=$(echo "${result_json}"           | jq -r '.probability // 0')
-    detection_method=$(echo "${result_json}" | jq -r '.detection_method // "unknown"')
-    gate_decision=$(echo "${result_json}"  | jq -r '.gate_decision // "none"')
-    music_only=$(echo "${result_json}"     | jq -r '.music_only // false')
-    transcript_snippet=$(echo "${result_json}" | jq -r '.transcript_snippet // ""')
+    submit_resp=$(cat "${tmpfile}")
+    rm -f "${tmpfile}"
+
+    job_id=$(echo "${submit_resp}" | jq -r '.job_id // empty')
+
+    if [[ -z "${job_id}" ]]; then
+      echo "ERROR: Failed to get job_id from submit response for run #${i}: ${submit_resp}" >&2
+      job_ids[i]=""
+      statuses[i]="submit_error"
+      finished[i]=1
+      file_inconsistent=1
+      continue
+    fi
+
+    echo "  Run #${i}: queued job_id=${job_id}"
+
+    job_ids[i]="${job_id}"
+    statuses[i]="queued"
+    finished[i]=0
+  done
+
+  echo "All submissions done, polling until all jobs complete..."
+
+  start_ts=$(date +%s)
+  while :; do
+    all_done=1
+
+    for (( i=1; i<=RUNS; i++ )); do
+      if [[ "${finished[i]:-0}" -eq 1 ]]; then
+        continue
+      fi
+
+      all_done=0
+      job_id="${job_ids[i]}"
+
+      if [[ -z "${job_id}" ]]; then
+        finished[i]=1
+        continue
+      fi
+
+      status_resp=$(curl -s "${API_BASE_URL}/jobs?job_id=${job_id}")
+      status=$(echo "${status_resp}" | jq -r '.jobs[0].status // empty')
+
+      if [[ "${status}" == "succeeded" || "${status}" == "failed" || "${status}" == "error" ]]; then
+        statuses[i]="${status}"
+        finished[i]=1
+
+        if [[ "${status}" == "succeeded" ]]; then
+          results_json[i]=$(curl -s "${API_BASE_URL}/jobs/${job_id}/result")
+        else
+          results_json[i]=""
+        fi
+      fi
+    done
+
+    if (( all_done == 1 )); then
+      break
+    fi
+
+    now_ts=$(date +%s)
+    if (( now_ts - start_ts > TIMEOUT )); then
+      echo "ERROR: Timeout waiting for jobs for ${basename}" >&2
+      for (( i=1; i<=RUNS; i++ )); do
+        if [[ "${finished[i]:-0}" -ne 1 ]]; then
+          statuses[i]="timeout"
+          finished[i]=1
+          results_json[i]=""
+        fi
+      done
+      break
+    fi
+
+    sleep "${POLL_INTERVAL}"
+  done
+
+  # Now that all jobs are finished (or timed out), parse results and print table
+  for (( i=1; i<=RUNS; i++ )); do
+    job_id="${job_ids[i]:-}"
+    status="${statuses[i]:-unknown}"
+
+    if [[ "${status}" != "succeeded" ]]; then
+      # Non-successful job is automatically inconsistent
+      printf "%-4s %-36s %-15s %-11s %-18s %-10s %-10s %s*\n" \
+        "${i}" "${job_id:-ERROR}" "-" "-" "${status}" "-" "-" "job not successful"
+      file_inconsistent=1
+      continue
+    fi
+
+    result_json="${results_json[i]}"
+
+    language=$(echo "${result_json}"           | jq -r '.language // "none"')
+    prob=$(echo "${result_json}"              | jq -r '.probability // 0')
+    detection_method=$(echo "${result_json}"  | jq -r '.detection_method // "unknown"')
+    gate_decision=$(echo "${result_json}"     | jq -r '.gate_decision // "none"')
+    music_only=$(echo "${result_json}"        | jq -r '.music_only // false')
+    transcript_snippet=$(echo "${result_json}"| jq -r '.transcript_snippet // ""')
 
     # Derive a simple "pipeline mode"
     pipeline_mode="BASE"
@@ -214,13 +270,13 @@ for file in "${files[@]}"; do
       short_tx="${short_tx:0:57}..."
     fi
 
-    # Compare with baseline (run #1)
-    if (( i == 1 )); then
+    if (( baseline_initialized == 0 )); then
       base_language="${language}"
       base_gate_decision="${gate_decision}"
       base_pipeline="${pipeline_mode}"
       base_music_only="${music_only}"
       base_detection_method="${detection_method}"
+      baseline_initialized=1
       consistent_marker=" "
     else
       consistent_marker=" "
@@ -234,7 +290,6 @@ for file in "${files[@]}"; do
       fi
     fi
 
-    # Print row (mark inconsistent runs with '*')
     printf "%-4s %-36s %-15s %-11s %-18s %-10s %-10s %s%s\n" \
       "${i}" "${job_id}" "${language}" "${prob}" "${gate_decision}" \
       "${pipeline_mode}" "${music_only}" "${short_tx}" "${consistent_marker}"
@@ -242,28 +297,91 @@ for file in "${files[@]}"; do
 
   echo
 
+  # -------- Accumulate Markdown report for this file --------
+  MD_REPORT+=$'### File: '"${basename}"$'\n\n'
+  MD_REPORT+=$'| Run | JobId | Status | Language | Probability | DetectionMethod | GateDecision | Pipeline | MusicOnly | TranscriptSnippet | ConsistentWithBaseline |\n'
+  MD_REPORT+=$'| --- | ----- | ------ | -------- | ----------- | --------------- | ------------ | -------- | --------- | ----------------- | ---------------------- |\n'
+
+  baseline_initialized_md=0
+  base_language_md=""
+  base_gate_decision_md=""
+  base_pipeline_md=""
+  base_music_only_md=""
+  base_detection_method_md=""
+
+  for (( i=1; i<=RUNS; i++ )); do
+    job_id="${job_ids[i]:-}"
+    status="${statuses[i]:-unknown}"
+
+    if [[ "${status}" != "succeeded" ]]; then
+      # Non-successful job row in MD
+      MD_REPORT+="| ${i} | ${job_id:-ERROR} | ${status} | - | - | - | - | - | - | job not successful | ❌ |"$'\n'
+      continue
+    fi
+
+    result_json="${results_json[i]}"
+
+    language=$(echo "${result_json}"           | jq -r '.language // "none"')
+    prob=$(echo "${result_json}"              | jq -r '.probability // 0')
+    detection_method=$(echo "${result_json}"  | jq -r '.detection_method // "unknown"')
+    gate_decision=$(echo "${result_json}"     | jq -r '.gate_decision // "none"')
+    music_only=$(echo "${result_json}"        | jq -r '.music_only // false')
+    transcript_snippet=$(echo "${result_json}"| jq -r '.transcript_snippet // ""')
+
+    pipeline_mode="BASE"
+    if [[ "${gate_decision}" == accepted_mid_zone_* ]]; then
+      pipeline_mode="MID_ZONE"
+    elif [[ "${detection_method}" == *"-vad" ]]; then
+      pipeline_mode="VAD"
+    fi
+
+    short_tx_md="${transcript_snippet}"
+    if (( ${#short_tx_md} > 60 )); then
+      short_tx_md="${short_tx_md:0:57}..."
+    fi
+
+    if (( baseline_initialized_md == 0 )); then
+      base_language_md="${language}"
+      base_gate_decision_md="${gate_decision}"
+      base_pipeline_md="${pipeline_mode}"
+      base_music_only_md="${music_only}"
+      base_detection_method_md="${detection_method}"
+      baseline_initialized_md=1
+      consistent_flag="✅"
+    else
+      if [[ "${language}" != "${base_language_md}" \
+         || "${gate_decision}" != "${base_gate_decision_md}" \
+         || "${pipeline_mode}" != "${base_pipeline_md}" \
+         || "${music_only}" != "${base_music_only_md}" \
+         || "${detection_method}" != "${base_detection_method_md}" ]]; then
+        consistent_flag="❌"
+      else
+        consistent_flag="✅"
+      fi
+    fi
+
+    MD_REPORT+="| ${i} | ${job_id} | ${status} | ${language} | ${prob} | ${detection_method} | ${gate_decision} | ${pipeline_mode} | ${music_only} | ${short_tx_md} | ${consistent_flag} |"$'\n'
+  done
+
+  MD_REPORT+=$'\n'
+
   if (( file_inconsistent == 0 )); then
     echo "RESULT for ${basename}: ✅ CONSISTENT across ${RUNS} runs."
     SUMMARY_LINES+=( "CONSISTENT  ${basename}" )
   else
-    echo "RESULT for ${basename}: ❌ INCONSISTENT vs run #1 (see '*' rows above)."
+    echo "RESULT for ${basename}: ❌ INCONSISTENT across runs (see '*' rows above)."
     SUMMARY_LINES+=( "INCONSISTENT ${basename}" )
   fi
 
   echo
 done
 
-# ─────────────────────────────────────────────────────────────
-# Final summary ordered by file
-# ─────────────────────────────────────────────────────────────
-echo "======================= FINAL SUMMARY ======================="
-# SUMMARY_LINES entries are: "INCONSISTENT filename" or "CONSISTENT filename"
-# We want them ordered by filename; we'll sort on the second column.
-printf "%s\n" "${SUMMARY_LINES[@]}" | sort -k2,2 | while read -r status fname; do
-  if [[ "${status}" == "INCONSISTENT" ]]; then
-    echo "❌ ${fname}  (inconsistencies across runs)"
-  else
-    echo "✅ ${fname}  (consistent across runs)"
-  fi
+echo "================ OVERALL SUMMARY ================"
+for line in "${SUMMARY_LINES[@]}"; do
+  echo "${line}"
 done
-echo "============================================================="
+
+echo
+echo "================ MARKDOWN REPORT (copy/paste below) ================"
+echo
+printf '%s\n' "$MD_REPORT"
