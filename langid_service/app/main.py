@@ -259,16 +259,18 @@ def gate_path_metrics():
     all_paths = set(GATE_PATH_LABELS.values())
     all_paths.add("unknown")  # Include unknown category
 
-    # Collect counts for each gate path
-    path_counts = {}
-    total = 0
-    for gate_path in all_paths:
-        try:
-            count = LANGID_GATE_PATH_DECISIONS.labels(gate_path=gate_path)._value.get()
-        except KeyError:
-            count = 0
-        path_counts[gate_path] = count
-        total += count
+    # Collect counts using public API
+    path_counts = {path: 0 for path in all_paths}
+    
+    # Use collect() to get metric samples via public API
+    for metric in LANGID_GATE_PATH_DECISIONS.collect():
+        for sample in metric.samples:
+            if sample.name == "langid_gate_path_decisions_total":
+                gate_path = sample.labels.get("gate_path")
+                if gate_path in path_counts:
+                    path_counts[gate_path] = int(sample.value)
+
+    total = sum(path_counts.values())
 
     # Calculate percentages
     path_percentages = {}

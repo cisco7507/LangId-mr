@@ -21,6 +21,16 @@ const GATE_PATH_COLORS = {
     unknown: 'bg-slate-400',
 };
 
+// Description for each gate path (used in legend)
+const GATE_PATH_DESCRIPTIONS = {
+    high_confidence: 'Auto-detected with high probability',
+    mid_zone_stopword: 'Stopword heuristic confirmed',
+    vad_retry: 'Required voice activity detection',
+    fallback_scoring: 'EN/FR scoring probe used',
+    music_only: 'Background music detected',
+    unknown: 'Unclassified decision',
+};
+
 function GatePathScorecard() {
     const { data, loading, error, lastUpdated } = useGatePathMetrics();
 
@@ -115,12 +125,12 @@ function GatePathScorecard() {
                         <div className="mt-4 pt-4 border-t border-slate-100">
                             <p className="text-[10px] text-slate-400 uppercase tracking-wide mb-2">Gate Path Legend</p>
                             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-slate-500">
-                                <div><span className="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-1"></span>High Confidence: Auto-detected with high probability</div>
-                                <div><span className="inline-block w-2 h-2 rounded-full bg-sky-500 mr-1"></span>Mid-Zone: Stopword heuristic confirmed</div>
-                                <div><span className="inline-block w-2 h-2 rounded-full bg-amber-500 mr-1"></span>VAD Retry: Required voice activity detection</div>
-                                <div><span className="inline-block w-2 h-2 rounded-full bg-orange-500 mr-1"></span>Fallback: EN/FR scoring probe used</div>
-                                <div><span className="inline-block w-2 h-2 rounded-full bg-purple-500 mr-1"></span>Music Only: Background music detected</div>
-                                <div><span className="inline-block w-2 h-2 rounded-full bg-slate-400 mr-1"></span>Unknown: Unclassified decision</div>
+                                {Object.entries(GATE_PATH_COLORS).map(([path, colorClass]) => (
+                                    <div key={path}>
+                                        <span className={`inline-block w-2 h-2 rounded-full ${colorClass} mr-1`}></span>
+                                        {GATE_PATH_LABELS[path]}: {GATE_PATH_DESCRIPTIONS[path]}
+                                    </div>
+                                ))}
                             </div>
                         </div>
                     </>

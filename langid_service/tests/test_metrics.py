@@ -148,17 +148,26 @@ class TestGatePathClassification:
 class TestGatePathMetrics:
     """Tests for the gate path metrics recording."""
 
+    def _get_counter_value(self, gate_path: str) -> int:
+        """Helper to get counter value using public API."""
+        for metric in app_metrics.LANGID_GATE_PATH_DECISIONS.collect():
+            for sample in metric.samples:
+                if sample.name == "langid_gate_path_decisions_total":
+                    if sample.labels.get("gate_path") == gate_path:
+                        return int(sample.value)
+        return 0
+
     def test_record_gate_path_decision_increments_counter(self):
         """Test that recording a gate path decision increments the counter."""
-        # Get the current value (if any)
+        # Get the current value using public API
         gate_path = "high_confidence"
-        initial_value = app_metrics.LANGID_GATE_PATH_DECISIONS.labels(gate_path=gate_path)._value.get()
+        initial_value = self._get_counter_value(gate_path)
         
         # Record the decision
         app_metrics.record_gate_path_decision("accepted_high_conf")
         
         # Check that the counter was incremented
-        new_value = app_metrics.LANGID_GATE_PATH_DECISIONS.labels(gate_path=gate_path)._value.get()
+        new_value = self._get_counter_value(gate_path)
         assert new_value == initial_value + 1
 
     def test_metrics_endpoint_exposes_gate_path_metric(self):
