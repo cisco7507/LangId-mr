@@ -64,6 +64,48 @@ LANGID_TRANSLATE_FR2EN = Counter(
     registry=REGISTRY,
 )
 
+LANGID_GATE_PATH_DECISIONS = Counter(
+    "langid_gate_path_decisions_total",
+    "Number of jobs finalized by gate path decision",
+    ["gate_path"],
+    registry=REGISTRY,
+)
+
+# Mapping of gate_decision values to human-readable gate path labels
+GATE_PATH_LABELS = {
+    "accepted_high_conf": "high_confidence",
+    "accepted_mid_zone_en": "mid_zone_stopword",
+    "accepted_mid_zone_fr": "mid_zone_stopword",
+    "vad_retry": "vad_retry",
+    "fallback": "fallback_scoring",
+    "NO_SPEECH_MUSIC_ONLY": "music_only",
+}
+
+
+def classify_gate_path(gate_decision: str) -> str:
+    """
+    Classify a gate_decision string into a canonical gate path label.
+    
+    Args:
+        gate_decision: The raw gate_decision value from detect_lang_en_fr_only.
+        
+    Returns:
+        A canonical gate path label for metrics tracking.
+    """
+    return GATE_PATH_LABELS.get(gate_decision, "unknown")
+
+
+def record_gate_path_decision(gate_decision: str) -> None:
+    """
+    Record a gate path decision in the Prometheus counter.
+    
+    Args:
+        gate_decision: The raw gate_decision value from detect_lang_en_fr_only.
+    """
+    gate_path = classify_gate_path(gate_decision)
+    LANGID_GATE_PATH_DECISIONS.labels(gate_path=gate_path).inc()
+
+
 def _swap_registry_for_tests(new_registry):
     """
     Swaps the global REGISTRY for a test-specific one.

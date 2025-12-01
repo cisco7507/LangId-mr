@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from langid_service.app.main import app
 from langid_service.metrics import prometheus as prom_metrics
+from langid_service.app import metrics as app_metrics
 from unittest.mock import patch, MagicMock, AsyncMock
 from langid_service.cluster.config import ClusterConfig
 
@@ -114,3 +115,83 @@ def test_metrics_summary_structure():
         assert node_b["up"] is True
         assert node_b["jobs_owned_total"] == 1
         assert node_b["jobs_submitted_as_target"] == 1
+
+
+# Tests for gate path classification and metrics
+class TestGatePathClassification:
+    """Tests for the gate path classification helper function."""
+
+    @pytest.mark.parametrize("gate_decision,expected_path", [
+        ("accepted_high_conf", "high_confidence"),
+        ("accepted_mid_zone_en", "mid_zone_stopword"),
+        ("accepted_mid_zone_fr", "mid_zone_stopword"),
+        ("vad_retry", "vad_retry"),
+        ("fallback", "fallback_scoring"),
+        ("NO_SPEECH_MUSIC_ONLY", "music_only"),
+    ])
+    def test_classify_gate_path_known_decisions(self, gate_decision, expected_path):
+        """Test that known gate decisions are classified correctly."""
+        result = app_metrics.classify_gate_path(gate_decision)
+        assert result == expected_path
+
+    def test_classify_gate_path_unknown_decision(self):
+        """Test that unknown gate decisions return 'unknown'."""
+        result = app_metrics.classify_gate_path("some_unknown_decision")
+        assert result == "unknown"
+
+    def test_classify_gate_path_empty_string(self):
+        """Test that empty string returns 'unknown'."""
+        result = app_metrics.classify_gate_path("")
+        assert result == "unknown"
+
+
+class TestGatePathMetrics:
+    """Tests for the gate path metrics recording."""
+
+    def _get_counter_value(self, gate_path: str) -> int:
+        """Helper to get counter value using public API."""
+        for metric in app_metrics.LANGID_GATE_PATH_DECISIONS.collect():
+            for sample in metric.samples:
+                if sample.name == "langid_gate_path_decisions_total":
+                    if sample.labels.get("gate_path") == gate_path:
+                        return int(sample.value)
+        return 0
+
+    def test_record_gate_path_decision_increments_counter(self):
+        """Test that recording a gate path decision increments the counter."""
+        # Get the current value using public API
+        gate_path = "high_confidence"
+        initial_value = self._get_counter_value(gate_path)
+        
+        # Record the decision
+        app_metrics.record_gate_path_decision("accepted_high_conf")
+        
+        # Check that the counter was incremented
+        new_value = self._get_counter_value(gate_path)
+        assert new_value == initial_value + 1
+
+    def test_metrics_endpoint_exposes_gate_path_metric(self):
+        """Test that the metrics endpoint exposes the gate path counter."""
+        # Record at least one decision to ensure the metric exists
+        app_metrics.record_gate_path_decision("accepted_high_conf")
+        
+        response = client.get("/metrics")
+        assert response.status_code == 200
+        assert b"langid_gate_path_decisions_total" in response.content
+
+    def test_gate_paths_endpoint_returns_valid_json(self):
+        """Test that the /metrics/gate-paths endpoint returns valid JSON."""
+        response = client.get("/metrics/gate-paths")
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Check structure
+        assert "total_decisions" in data
+        assert "by_gate_path" in data
+        assert "percentages" in data
+        
+        # Check that expected gate paths are present
+        expected_paths = {"high_confidence", "mid_zone_stopword", "vad_retry", 
+                         "fallback_scoring", "music_only", "unknown"}
+        assert expected_paths.issubset(set(data["by_gate_path"].keys()))
+        assert expected_paths.issubset(set(data["percentages"].keys()))
