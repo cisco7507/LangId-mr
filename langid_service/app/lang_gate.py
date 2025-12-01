@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import os
 import re
 from loguru import logger
@@ -290,7 +290,7 @@ def validate_language_strict(audio: np.ndarray):
             detail=f"Only English/French audio supported (p={probability:.2f}, got '{detected_lang}').",
         )
 
-def detect_lang_en_fr_only(audio: np.ndarray) -> Dict[str, Any]:
+def detect_lang_en_fr_only(audio: np.ndarray, job_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Detects language on a short audio probe with a strict EN/FR gate.
     Adds mid-zone heuristics based on English/French stopwords to decide whether
@@ -298,7 +298,12 @@ def detect_lang_en_fr_only(audio: np.ndarray) -> Dict[str, Any]:
     The audio provided is the full audio clip.
     """
     model = get_model()
-    logger.debug("Lang gate pipeline start", samples=len(audio), allowlist=list(ALLOWED_LANGS))
+    logger.debug(
+        "Lang gate pipeline start",
+        samples=len(audio),
+        allowlist=list(ALLOWED_LANGS),
+        job_id=job_id,
+    )
     probe_audio = _create_audio_probe(audio)
 
     # 1. Standard language detection on the probe (no VAD)
