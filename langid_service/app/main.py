@@ -1,5 +1,6 @@
 import io, os, tempfile, time, json, sys
 import multiprocessing as mp
+import threading
 try:
     from datetime import datetime, timedelta, UTC
 except ImportError:  # Python < 3.11
@@ -7,6 +8,7 @@ except ImportError:  # Python < 3.11
 
     UTC = timezone.utc
 from pathlib import Path
+from queue import Empty
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Response, Query, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,6 +18,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from .metrics import REGISTRY
+from .gate_metrics import GATE_PATH_CHOICES
 from typing import Optional
 
 from .config import LOG_DIR, MAX_WORKERS, WHISPER_MODEL_SIZE, MAX_FILE_SIZE_MB, ENFR_STRICT_REJECT, STORAGE_DIR
@@ -80,28 +83,111 @@ MP_CONTEXT = mp.get_context("spawn")
 _stop_event = MP_CONTEXT.Event()
 worker_processes = []
 
-def worker_loop(stop_event):
+_metric_events_queue = None
+_metric_listener_thread = None
+_metric_listener_stop = threading.Event()
+
+def worker_loop(stop_event, metric_queue):
     logger.info(f"Worker process {os.getpid()} started")
     try:
         while not stop_event.is_set():
-            worked = work_once()
+            try:
+                worked = work_once(metric_queue)
+            except KeyboardInterrupt:
+                logger.info(f"Worker process {os.getpid()} interrupted; stopping loop")
+                break
+            except Exception:
+                logger.exception("Unhandled exception in worker loop")
+                # Avoid tight crash loops if work_once keeps failing
+                stop_event.wait(0.1)
+                continue
+
             if not worked:
-                time.sleep(0.05)
+                # Use the stop event so we wake up promptly when shutting down
+                stop_event.wait(0.05)
+    except KeyboardInterrupt:
+        logger.info(f"Worker process {os.getpid()} received KeyboardInterrupt")
     finally:
         logger.info(f"Worker process {os.getpid()} exiting")
+
+
+def _ensure_metric_events_queue():
+    global _metric_events_queue
+    if _metric_events_queue is None:
+        _metric_events_queue = MP_CONTEXT.Queue()
+    _start_metric_listener()
+
+
+def _metric_listener_loop():
+    from .gate_metrics import record_gate_path_metrics
+
+    logger.info("Gate metrics consumer thread started")
+    while not _metric_listener_stop.is_set():
+        try:
+            payload = _metric_events_queue.get(timeout=0.5)
+        except Empty:
+            continue
+        except (EOFError, OSError):
+            break
+
+        if payload is None:
+            continue
+
+        gate_result = payload.get("gate_result") if isinstance(payload, dict) else None
+        job_id = payload.get("job_id") if isinstance(payload, dict) else None
+
+        try:
+            record_gate_path_metrics(gate_result or {}, job_id=job_id)
+        except Exception:
+            logger.bind(job_id=job_id or "-").exception(
+                "Failed to record gate path metrics from queue"
+            )
+
+    logger.info("Gate metrics consumer thread exiting")
+
+
+def _start_metric_listener():
+    global _metric_listener_thread
+    if _metric_listener_thread and _metric_listener_thread.is_alive():
+        return
+
+    _metric_listener_stop.clear()
+    _metric_listener_thread = threading.Thread(
+        target=_metric_listener_loop,
+        name="gate-metrics-consumer",
+        daemon=True,
+    )
+    _metric_listener_thread.start()
+
+
+def _stop_metric_listener():
+    global _metric_listener_thread
+    if not _metric_listener_thread:
+        return
+
+    _metric_listener_stop.set()
+    if _metric_events_queue is not None:
+        try:
+            _metric_events_queue.put_nowait(None)
+        except Exception:
+            pass
+
+    _metric_listener_thread.join(timeout=5)
+    _metric_listener_thread = None
 
 
 def start_workers():
     if _stop_event.is_set():
         _stop_event.clear()
 
+    _ensure_metric_events_queue()
     worker_processes.clear()
 
     for i in range(MAX_WORKERS):
         p = MP_CONTEXT.Process(
             target=worker_loop,
             name=f"worker-{i+1}",
-            args=(_stop_event,),
+            args=(_stop_event, _metric_events_queue),
             daemon=True,
         )
         p.start()
@@ -142,6 +228,7 @@ def on_shutdown():
         if p.is_alive():
             logger.warning(f"Worker process {p.pid} did not exit in time; terminating")
             p.terminate()
+    _stop_metric_listener()
 
 @app.get("/healthz")
 def healthz():
@@ -243,6 +330,42 @@ def metrics_json():
         return JSONResponse(content=metrics)
     finally:
         session.close()
+
+
+@app.get("/metrics/gate-paths")
+def gate_path_metrics():
+    """Return gate path decision metrics for the dashboard.
+
+    Returns a breakdown of job decisions by gate path, including:
+    - Total counts for each gate path
+    - Percentage distribution across paths
+    """
+    from .metrics import LANGID_GATE_PATH_DECISIONS
+
+    # Collect counts using public API and aggregate across label combinations
+    path_counts = {path: 0 for path in GATE_PATH_CHOICES}
+
+    for metric in LANGID_GATE_PATH_DECISIONS.collect():
+        for sample in metric.samples:
+            if sample.name != "langid_gate_path_decisions_total":
+                continue
+
+            gate_path = sample.labels.get("gate_path", "unknown")
+            path_counts[gate_path] = path_counts.get(gate_path, 0) + int(sample.value)
+
+    total = sum(path_counts.values())
+
+    # Calculate percentages
+    path_percentages = {}
+    for gate_path, count in path_counts.items():
+        path_percentages[gate_path] = round((count / total) * 100, 2) if total > 0 else 0.0
+
+    return JSONResponse(content={
+        "total_decisions": total,
+        "by_gate_path": path_counts,
+        "percentages": path_percentages,
+    })
+
 
 @app.get("/jobs", response_model=JobListResponse)
 def get_jobs():

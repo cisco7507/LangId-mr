@@ -7,7 +7,7 @@ except ImportError:  # Python < 3.11
     from datetime import datetime, timezone
 
     UTC = timezone.utc
-from typing import Optional
+from typing import Optional, Any
 from sqlalchemy.orm import Session
 from loguru import logger
 from ..database import SessionLocal
@@ -26,7 +26,7 @@ import threading
 CLAIM_LOCK = threading.Lock()
 SNIPPET_MAX_SECONDS = 15.0  # only transcribe the first N seconds for snippet
 
-def process_one(session: Session, job: Job) -> None:
+def process_one(session: Session, job: Job, metrics_queue: Optional[Any] = None) -> None:
     logger.info(f"Processing job {job.id}")
     job.status = JobStatus.running
     job.progress = 10
@@ -171,6 +171,24 @@ def process_one(session: Session, job: Job) -> None:
         metrics.LANGID_JOBS_TOTAL.labels(status="succeeded").inc()
         processing_time = (job.updated_at - job.created_at).total_seconds()
         metrics.LANGID_PROCESSING_SECONDS.observe(processing_time)
+        if metrics_queue is not None:
+            try:
+                metrics_queue.put_nowait(
+                    {
+                        "job_id": job.id,
+                        "gate_result": {
+                            "language": lang,
+                            "gate_decision": gate_decision,
+                            "detection_method": detection_method,
+                            "gate_meta": gate_meta,
+                            "music_only": music_only,
+                        },
+                    }
+                )
+            except Exception:
+                logger.bind(job_id=job.id).exception(
+                    "Failed to enqueue gate path metrics event"
+                )
     except Exception as e:
         logger.exception(f"Job {job.id} failed: {e}")
         job.attempts += 1
@@ -183,7 +201,7 @@ def process_one(session: Session, job: Job) -> None:
         metrics.LANGID_JOBS_RUNNING.dec()
         prom_metrics.jobs_active_dec(get_self_name())
 
-def work_once() -> Optional[str]:
+def work_once(metrics_queue: Optional[Any] = None) -> Optional[str]:
     session = SessionLocal()
     try:
         metrics.LANGID_ACTIVE_WORKERS.inc()
@@ -204,17 +222,17 @@ def work_once() -> Optional[str]:
             session.commit()
             claimed_id = job.id
 
-        process_one(session, job)
+        process_one(session, job, metrics_queue)
         return claimed_id
     finally:
         metrics.LANGID_ACTIVE_WORKERS.dec()
         session.close()
 
-def process_one_sync(job_id: str, db_session: Session) -> None:
+def process_one_sync(job_id: str, db_session: Session, metrics_queue: Optional[Any] = None) -> None:
     """
     Processes a single job synchronously for deterministic testing.
     """
     job = db_session.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise ValueError(f"Job not found: {job_id}")
-    process_one(db_session, job)
+    process_one(db_session, job, metrics_queue)

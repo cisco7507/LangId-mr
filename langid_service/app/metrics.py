@@ -64,6 +64,20 @@ LANGID_TRANSLATE_FR2EN = Counter(
     registry=REGISTRY,
 )
 
+LANGID_GATE_PATH_DECISIONS = Counter(
+    "langid_gate_path_decisions_total",
+    "Number of jobs finalized by gate path decision",
+    [
+        "gate_path",
+        "gate_decision",
+        "pipeline_mode",
+        "language",
+        "music_only",
+    ],
+    registry=REGISTRY,
+)
+
+
 def _swap_registry_for_tests(new_registry):
     """
     Swaps the global REGISTRY for a test-specific one.
