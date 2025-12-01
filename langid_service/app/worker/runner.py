@@ -171,6 +171,9 @@ def process_one(session: Session, job: Job) -> None:
         metrics.LANGID_JOBS_TOTAL.labels(status="succeeded").inc()
         processing_time = (job.updated_at - job.created_at).total_seconds()
         metrics.LANGID_PROCESSING_SECONDS.observe(processing_time)
+        # Record the gate path decision metric
+        if gate_decision:
+            metrics.record_gate_path_decision(gate_decision)
     except Exception as e:
         logger.exception(f"Job {job.id} failed: {e}")
         job.attempts += 1

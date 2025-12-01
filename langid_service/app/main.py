@@ -244,6 +244,44 @@ def metrics_json():
     finally:
         session.close()
 
+
+@app.get("/metrics/gate-paths")
+def gate_path_metrics():
+    """Return gate path decision metrics for the dashboard.
+
+    Returns a breakdown of job decisions by gate path, including:
+    - Total counts for each gate path
+    - Percentage distribution across paths
+    """
+    from .metrics import LANGID_GATE_PATH_DECISIONS, GATE_PATH_LABELS
+
+    # Get all gate path labels
+    all_paths = set(GATE_PATH_LABELS.values())
+    all_paths.add("unknown")  # Include unknown category
+
+    # Collect counts for each gate path
+    path_counts = {}
+    total = 0
+    for gate_path in all_paths:
+        try:
+            count = LANGID_GATE_PATH_DECISIONS.labels(gate_path=gate_path)._value.get()
+        except KeyError:
+            count = 0
+        path_counts[gate_path] = count
+        total += count
+
+    # Calculate percentages
+    path_percentages = {}
+    for gate_path, count in path_counts.items():
+        path_percentages[gate_path] = round((count / total) * 100, 2) if total > 0 else 0.0
+
+    return JSONResponse(content={
+        "total_decisions": total,
+        "by_gate_path": path_counts,
+        "percentages": path_percentages,
+    })
+
+
 @app.get("/jobs", response_model=JobListResponse)
 def get_jobs():
     session = SessionLocal()

@@ -3,6 +3,7 @@ import JobResultModal from "./JobResultModal.jsx";
 import { apiFetch } from "./api";
 import { fetchMetricsJson } from "./metricsApi";
 import ClusterMetricsCard from "./components/ClusterMetricsCard";
+import GatePathScorecard from "./components/GatePathScorecard";
 
 function StatusBadge({ status }) {
   const base =
@@ -233,8 +234,9 @@ function App() {
         </section>
 
         {/* Cluster Metrics */}
-        <section className="mb-6">
+        <section className="mb-6 grid gap-4 md:grid-cols-2">
           <ClusterMetricsCard />
+          <GatePathScorecard />
         </section>
 
         {/* Jobs table & actions */}
