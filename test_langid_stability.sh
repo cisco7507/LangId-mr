@@ -1,291 +1,226 @@
 #!/usr/bin/env bash
-#
-# test_langid_stability.sh
-#
-# Repeatedly submit the same audio file to a LangID service and
-# check for inconsistencies in the final result fields.
-#
-# Dependencies: curl, jq
-#
-# Usage:
-#   ./test_langid_stability.sh -f /path/to/audio.wav \
-#       -n 20 \
-#       -u http://localhost:8080 \
-#       -p 5 \
-#       -t 600
-#
+set -uo pipefail
 
-set -euo pipefail
-
-# ---------- Defaults ----------
-FILE_PATH=""
-RUNS=10
+# Defaults
 API_BASE="http://localhost:8080"
+RUNS=10
 POLL_INTERVAL=5
 TIMEOUT=600
-
-# ---------- Functions ----------
+FILE_PATH=""
 
 usage() {
   cat <<EOF
 Usage: $0 -f FILE [-n RUNS] [-u API_BASE] [-p POLL_INTERVAL] [-t TIMEOUT]
 
-  -f FILE         Path to audio file (required)
-  -n RUNS         Number of runs (default: $RUNS)
-  -u API_BASE     LangID API base URL (default: $API_BASE)
-  -p POLL         Poll interval in seconds (default: $POLL_INTERVAL)
-  -t TIMEOUT      Timeout in seconds per job (default: $TIMEOUT)
-
-Requires: curl, jq
+  -f FILE         Audio file to test (required)
+  -n RUNS         Number of runs (default: 10)
+  -u API_BASE     LangId API base URL (default: http://localhost:8080)
+  -p SECONDS      Poll interval in seconds (default: 5)
+  -t SECONDS      Timeout per job in seconds (default: 600)
 EOF
 }
 
-error() {
-  echo "ERROR: $*" >&2
-}
-
-# ---------- Parse args ----------
-
-while getopts ":f:n:u:p:t:h" opt; do
+while getopts "f:n:u:p:t:" opt; do
   case "$opt" in
     f) FILE_PATH="$OPTARG" ;;
     n) RUNS="$OPTARG" ;;
     u) API_BASE="$OPTARG" ;;
     p) POLL_INTERVAL="$OPTARG" ;;
     t) TIMEOUT="$OPTARG" ;;
-    h) usage; exit 0 ;;
-    \?) error "Invalid option: -$OPTARG"; usage; exit 1 ;;
-    :) error "Option -$OPTARG requires an argument"; usage; exit 1 ;;
+    *) usage; exit 1 ;;
   esac
 done
 
 if [[ -z "$FILE_PATH" ]]; then
-  error "File path is required (-f)"
+  echo "ERROR: -f FILE is required" >&2
   usage
   exit 1
 fi
 
 if [[ ! -f "$FILE_PATH" ]]; then
-  error "File not found: $FILE_PATH"
+  echo "ERROR: File not found: $FILE_PATH" >&2
   exit 1
 fi
 
-if ! command -v curl >/dev/null 2>&1; then
-  error "curl is required"
-  exit 1
-fi
-
-if ! command -v jq >/dev/null 2>&1; then
-  error "jq is required (e.g. brew install jq)"
-  exit 1
-fi
-
-# Normalize API_BASE (no trailing slash)
 API_BASE="${API_BASE%/}"
-
-# ---------- Arrays to store results ----------
-
-declare -a JOB_IDS
-declare -a LANGS
-declare -a PROBS
-declare -a GATE_DECS
-declare -a MODES
-declare -a MUSIC_ONLYS
-declare -a DET_METHODS
-declare -a TRANSCRIPTS
-declare -a MID_ZONES
-declare -a ERRORS
-
-# ---------- Helpers ----------
 
 submit_job() {
   local file="$1"
-  local url="$API_BASE/jobs"
-
-  # -s silent, -S show errors, -f fail on HTTP errors
-  curl -sS -f -F "file=@${file}" "$url"
+  curl -sS -f -F "file=@${file}" "${API_BASE}/jobs"
 }
 
 poll_job_status() {
   local job_id="$1"
-  local poll_interval="$2"
+  local interval="$2"
   local timeout="$3"
 
-  local status_url="$API_BASE/jobs?job_id=${job_id}"
-  local start_ts
-  start_ts=$(date +%s)
+  local url="${API_BASE}/jobs?job_id=${job_id}"
+  local start now
+  start=$(date +%s)
 
   while true; do
-    local now_ts
-    now_ts=$(date +%s)
-    local elapsed=$(( now_ts - start_ts ))
-
-    if (( elapsed > timeout )); then
-      echo "TIMEOUT"
-      return 0
+    now=$(date +%s)
+    if (( now - start > timeout )); then
+      echo ""
+      return 1
     fi
 
-    local status_json
-    status_json=$(curl -sS "$status_url" || true)
-
-    # If empty or malformed, sleep & retry
-    if [[ -z "$status_json" ]]; then
-      sleep "$poll_interval"
+    local resp
+    if ! resp=$(curl -sS -f "$url" 2>/dev/null); then
+      sleep "$interval"
       continue
     fi
 
-    # Assume /jobs?job_id= filters to this job; pick first
     local status
-    status=$(echo "$status_json" | jq -r '.jobs[0].status // "unknown"' 2>/dev/null || echo "unknown")
+    status=$(echo "$resp" | jq -r '.jobs[0].status // empty' 2>/dev/null || echo "")
 
-    case "$status" in
-      succeeded|failed|error)
-        echo "$status"
-        return 0
-        ;;
-      *)
-        sleep "$poll_interval"
-        ;;
-    esac
+    if [[ -z "$status" ]]; then
+      sleep "$interval"
+      continue
+    fi
+
+    if [[ "$status" == "succeeded" || "$status" == "failed" || "$status" == "error" ]]; then
+      echo "$resp"
+      return 0
+    fi
+
+    sleep "$interval"
   done
 }
 
-fetch_result() {
-  local job_id="$1"
-  local url="$API_BASE/jobs/${job_id}/result"
-  curl -sS "$url"
+sanitize_snippet() {
+  local txt="$1"
+  # one line, escape pipes, trim, limit length
+  txt=${txt//$'\n'/ }
+  txt=${txt//'|'/'\|'}
+  txt=${txt//\`/}
+  txt=${txt//$'\r'/}
+  txt=$(echo "$txt" | sed 's/[[:space:]]\+/ /g')
+  if (( ${#txt} > 80 )); then
+    txt="${txt:0:77}..."
+  fi
+  echo "$txt"
 }
 
-# Build a compact summary JSON from the result JSON
-summarize_result() {
-  local json="$1"
-  echo "$json" | jq -r '
-    {
-      job_id: .job_id,
-      original_filename: (.original_filename // null),
-      language: (
-        (try .language catch null)
-        // (try .raw.language catch null)
-      ),
-      probability: (
-        (try .probability catch null)
-        // (try .raw.probability catch null)
-      ),
-      gate_decision: (
-        (try .gate_decision catch null)
-        // (try .raw.gate_decision catch null)
-        // (try .raw.raw.lang_gate.gate_decision catch null)
-      ),
-      music_only: (
-        (try .music_only catch false)
-        // (try .raw.music_only catch false)
-        // (try .raw.raw.music_only catch false)
-      ),
-      detection_method: (
-        (try .detection_method catch null)
-        // (try .raw.detection_method catch null)
-      ),
-      transcript_snippet: (
-        (try .transcript_snippet catch "")
-      ),
-      gate_mid_zone: (
-        (try .gate_meta.mid_zone catch false)
-        or (try .raw.gate_meta.mid_zone catch false)
-        or (try .raw.raw.lang_gate.gate_meta.mid_zone catch false)
-      ),
-      pipeline_mode: (
-        if (
-          (try .gate_meta.vad_used catch false)
-          or (try .raw.gate_meta.vad_used catch false)
-          or (try .raw.raw.lang_gate.gate_meta.vad_used catch false)
-          or (try .raw.raw.lang_gate.use_vad catch false)
-        ) then "VAD"
-        elif (
-          (try .gate_meta.mid_zone catch false)
-          or (try .raw.gate_meta.mid_zone catch false)
-          or (try .raw.raw.lang_gate.gate_meta.mid_zone catch false)
-        ) then "MID_ZONE"
-        else "NORMAL"
-        end
-      )
-    }
-  '
-}
+echo "Running ${RUNS} runs against ${API_BASE} with file: ${FILE_PATH}"
 
-# ---------- Main loop ----------
+declare -a JOB_IDS ERRORS STATUSES LANGS PROBS DETMETHODS GATEDECIS MODES MUSIC MIDZ SNIPS
 
-echo "Running $RUNS runs against $API_BASE with file: $FILE_PATH"
+echo "Submitting jobs..."
+
+tmp_submit_dir=$(mktemp -d "/tmp/langid_submit.XXXXXX")
+
+# ---------- Phase 1: fire all submits in parallel ----------
+for (( i=0; i<RUNS; i++ )); do
+  (
+    submit_resp=""
+    if ! submit_resp=$(submit_job "$FILE_PATH" 2>&1); then
+      printf "ERROR submit_failed: %s\n" "$submit_resp" >"$tmp_submit_dir/$i"
+      exit 0
+    fi
+
+    job_id=$(printf '%s\n' "$submit_resp" | jq -r '.job_id // empty' 2>/dev/null || printf '')
+    if [[ -z "$job_id" ]]; then
+      printf "ERROR no_job_id\n" >"$tmp_submit_dir/$i"
+    else
+      printf "%s\n" "$job_id" >"$tmp_submit_dir/$i"
+    fi
+  ) &
+done
+
+wait || true
+echo "All submit workers finished, collecting results..."
+
+# Collect submit results
+ok=0
+fail=0
+for (( i=0; i<RUNS; i++ )); do
+  if [[ -f "$tmp_submit_dir/$i" ]]; then
+    content=$(<"$tmp_submit_dir/$i")
+    if [[ "$content" == ERROR* ]]; then
+      ERRORS[i]="${content#ERROR }"
+      JOB_IDS[i]=""
+      ((fail++))
+    else
+      JOB_IDS[i]="$content"
+      ERRORS[i]=""
+      ((ok++))
+    fi
+  else
+    ERRORS[i]="submit_unknown"
+    JOB_IDS[i]=""
+    ((fail++))
+  fi
+done
+
+rm -rf "$tmp_submit_dir"
+
+echo "Submissions complete: $ok ok, $fail failed."
+echo "All jobs submitted. Polling for completion..."
 echo
 
+# ---------- Phase 2: poll each job & fetch result ----------
 for (( i=0; i<RUNS; i++ )); do
-  run=$((i+1))
-  # Defaults for this run
-  JOB_IDS[i]=""
-  LANGS[i]=""
-  PROBS[i]=""
-  GATE_DECS[i]=""
-  MODES[i]=""
-  MUSIC_ONLYS[i]=""
-  DET_METHODS[i]=""
-  TRANSCRIPTS[i]=""
-  MID_ZONES[i]=""
-  ERRORS[i]=""
-
-  # 1) Submit job
-  submit_resp=""
-  if ! submit_resp=$(submit_job "$FILE_PATH" 2>/dev/null); then
-    ERRORS[i]="submit_failed"
-    continue
-  fi
-
-  job_id=$(echo "$submit_resp" | jq -r '.job_id // empty' 2>/dev/null || echo "")
+  job_id="${JOB_IDS[i]}"
   if [[ -z "$job_id" ]]; then
-    ERRORS[i]="no_job_id"
+    STATUSES[i]="submit_error"
+    LANGS[i]=""
+    PROBS[i]=""
+    DETMETHODS[i]=""
+    GATEDECIS[i]=""
+    MODES[i]=""
+    MUSIC[i]=""
+    MIDZ[i]=""
+    SNIPS[i]=""
     continue
   fi
-  JOB_IDS[i]="$job_id"
 
-  # 2) Poll
-  status=$(poll_job_status "$job_id" "$POLL_INTERVAL" "$TIMEOUT")
-  if [[ "$status" == "TIMEOUT" ]]; then
-    ERRORS[i]="timeout"
+  status_json=""
+  if ! status_json=$(poll_job_status "$job_id" "$POLL_INTERVAL" "$TIMEOUT" 2>/dev/null); then
+    STATUSES[i]="timeout"
+    ERRORS[i]="timeout_waiting"
     continue
-  elif [[ "$status" != "succeeded" ]]; then
+  fi
+
+  status=$(echo "$status_json" | jq -r '.jobs[0].status // "unknown"' 2>/dev/null || echo "unknown")
+  STATUSES[i]="$status"
+
+  if [[ "$status" != "succeeded" ]]; then
     ERRORS[i]="status_${status}"
     continue
   fi
 
-  # 3) Fetch result
   result_json=""
-  if ! result_json=$(fetch_result "$job_id" 2>/dev/null); then
+  if ! result_json=$(curl -sS -f "${API_BASE}/jobs/${job_id}/result" 2>/dev/null); then
     ERRORS[i]="result_fetch_failed"
     continue
   fi
 
-  # 4) Summarize
-  summary_json=$(summarize_result "$result_json")
+  LANGS[i]=$(echo "$result_json" | jq -r '.language // "unknown"' 2>/dev/null || echo "unknown")
+  PROBS[i]=$(echo "$result_json" | jq -r '.probability // 0' 2>/dev/null || echo "0")
+  DETMETHODS[i]=$(echo "$result_json" | jq -r '.detection_method // "unknown"' 2>/dev/null || echo "unknown")
+  GATEDECIS[i]=$(echo "$result_json" | jq -r '.gate_decision // "unknown"' 2>/dev/null || echo "unknown")
 
-  lang=$(echo "$summary_json" | jq -r '.language // ""')
-  prob=$(echo "$summary_json" | jq -r '.probability // ""')
-  gate_dec=$(echo "$summary_json" | jq -r '.gate_decision // ""')
-  music_only=$(echo "$summary_json" | jq -r '.music_only // false')
-  det_method=$(echo "$summary_json" | jq -r '.detection_method // ""')
-  transcript=$(echo "$summary_json" | jq -r '.transcript_snippet // ""')
-  mid_zone=$(echo "$summary_json" | jq -r '.gate_mid_zone // false')
-  mode=$(echo "$summary_json" | jq -r '.pipeline_mode // "NORMAL"')
+  music_flag=$(echo "$result_json" | jq -r '.music_only // false' 2>/dev/null || echo "false")
+  MUSIC[i]="$music_flag"
 
-  LANGS[i]="$lang"
-  PROBS[i]="$prob"
-  GATE_DECS[i]="$gate_dec"
-  MUSIC_ONLYS[i]="$music_only"
-  DET_METHODS[i]="$det_method"
-  TRANSCRIPTS[i]="$transcript"
-  MID_ZONES[i]="$mid_zone"
+  mid_zone=$(echo "$result_json" | jq -r '.gate_meta.mid_zone // false' 2>/dev/null || echo "false")
+  MIDZ[i]="$mid_zone"
+
+  mode="BASE"
+  use_vad=$(echo "$result_json" | jq -r '.raw.raw.lang_gate.use_vad // .raw.lang_gate.use_vad // false' 2>/dev/null || echo "false")
+  if [[ "$use_vad" == "true" || "${DETMETHODS[i]}" == *"vad"* ]]; then
+    mode="VAD"
+  elif [[ "$mid_zone" == "true" || "${GATEDECIS[i]}" == *"mid_zone"* ]]; then
+    mode="MID_ZONE"
+  fi
   MODES[i]="$mode"
+
+  snippet=$(echo "$result_json" | jq -r '.transcript_snippet // .raw.text // ""' 2>/dev/null || echo "")
+  SNIPS[i]=$(sanitize_snippet "$snippet")
 done
 
-# ---------- Print per-run table ----------
-
+# ---------- Phase 3: tabular report ----------
 printf "\n==================== PER-RUN RESULTS ====================\n\n"
 printf "%-4s %-38s %-8s %-11s %-20s %-10s %-8s %-15s %-8s %s\n" \
   "Run" "JobId" "Lang" "Prob" "GateDecision" "Mode" "Music" "DetectMethod" "MidZone" "Transcript"
@@ -295,128 +230,74 @@ printf "%-4s %-38s %-8s %-11s %-20s %-10s %-8s %-15s %-8s %s\n" \
 for (( i=0; i<RUNS; i++ )); do
   run=$((i+1))
   job_id="${JOB_IDS[i]}"
-  err="${ERRORS[i]}"
-
-  if [[ -n "$err" ]]; then
-    printf "%-4s %-38s %-8s %-11s %-20s %-10s %-8s %-15s %-8s %s\n" \
-      "$run" "$job_id" "" "" "" "" "" "" "" "ERROR: $err"
-    continue
-  fi
-
-  lang="${LANGS[i]}"
-  prob="${PROBS[i]}"
-  gate_dec="${GATE_DECS[i]}"
-  mode="${MODES[i]}"
-  music="${MUSIC_ONLYS[i]}"
-  det="${DET_METHODS[i]}"
-  mid="${MID_ZONES[i]}"
-  transcript="${TRANSCRIPTS[i]}"
+  lang="${LANGS[i]:-}"
+  prob="${PROBS[i]:-}"
+  gate="${GATEDECIS[i]:-}"
+  mode="${MODES[i]:-}"
+  music="${MUSIC[i]:-}"
+  det="${DETMETHODS[i]:-}"
+  mid="${MIDZ[i]:-}"
+  snip="${SNIPS[i]:-}"
 
   printf "%-4s %-38s %-8s %-11s %-20s %-10s %-8s %-15s %-8s %s\n" \
-    "$run" "$job_id" "$lang" "$prob" "$gate_dec" "$mode" "$music" "$det" "$mid" "$transcript"
+    "$run" "${job_id:0:38}" "$lang" "$prob" "$gate" "$mode" "$music" "$det" "$mid" "$snip"
 done
 
-# ---------- Compare vs run #1 ----------
+# ---------- Phase 4: consistency vs run #1 ----------
+baseline_idx=-1
+for (( i=0; i<RUNS; i++ )); do
+  if [[ -z "${ERRORS[i]:-}" && "${STATUSES[i]:-}" == "succeeded" ]]; then
+    baseline_idx=$i
+    break
+  fi
+done
 
 printf "\n======================= SUMMARY =========================\n"
 
-# Baseline is run 1 (index 0), if no error
-if [[ -n "${ERRORS[0]}" || -z "${JOB_IDS[0]}" ]]; then
-  echo "Run #1 has an error or no job_id; cannot compute consistency against run #1."
+if (( baseline_idx == -1 )); then
+  echo "No successful baseline run found; cannot compute consistency."
   exit 0
 fi
 
-base_lang="${LANGS[0]}"
-base_gate="${GATE_DECS[0]}"
-base_mode="${MODES[0]}"
-base_music="${MUSIC_ONLYS[0]}"
-base_det="${DET_METHODS[0]}"
+base_lang="${LANGS[baseline_idx]}"
+base_prob="${PROBS[baseline_idx]}"
+base_gate="${GATEDECIS[baseline_idx]}"
+base_mode="${MODES[baseline_idx]}"
+base_music="${MUSIC[baseline_idx]}"
+base_det="${DETMETHODS[baseline_idx]}"
 
-# Track which fields ever differ
-fields_diff=()
+inconsistent_fields=()
 
-check_field_diff() {
-  local name="$1"
-  local base_val="$2"
-  local val="$3"
-  if [[ "$base_val" != "$val" ]]; then
-    fields_diff+=( "$name" )
-  fi
-}
-
-# We will also collect inconsistent runs
-inconsistent_rows=()
-
-for (( i=1; i<RUNS; i++ )); do
-  err="${ERRORS[i]}"
-  job_id="${JOB_IDS[i]}"
-
-  if [[ -n "$err" || -z "$job_id" ]]; then
+for (( i=0; i<RUNS; i++ )); do
+  if [[ "${STATUSES[i]}" != "succeeded" ]]; then
     continue
   fi
-
-  lang="${LANGS[i]}"
-  gate="${GATE_DECS[i]}"
-  mode="${MODES[i]}"
-  music="${MUSIC_ONLYS[i]}"
-  det="${DET_METHODS[i]}"
-
-  if [[ "$lang" != "$base_lang" || "$gate" != "$base_gate" || "$mode" != "$base_mode" || "$music" != "$base_music" || "$det" != "$base_det" ]]; then
-    # record per-field diff
-    check_field_diff "Language" "$base_lang" "$lang"
-    check_field_diff "GateDecision" "$base_gate" "$gate"
-    check_field_diff "PipelineMode" "$base_mode" "$mode"
-    check_field_diff "MusicOnly" "$base_music" "$music"
-    check_field_diff "DetectionMethod" "$base_det" "$det"
-    inconsistent_rows+=( "$i" )
+  if [[ "${LANGS[i]}" != "$base_lang" ]]; then
+    inconsistent_fields+=("Language")
+  fi
+  if [[ "${GATEDECIS[i]}" != "$base_gate" ]]; then
+    inconsistent_fields+=("GateDecision")
+  fi
+  if [[ "${MODES[i]}" != "$base_mode" ]]; then
+    inconsistent_fields+=("PipelineMode")
+  fi
+  if [[ "${MUSIC[i]}" != "$base_music" ]]; then
+    inconsistent_fields+=("MusicOnly")
+  fi
+  if [[ "${DETMETHODS[i]}" != "$base_det" ]]; then
+    inconsistent_fields+=("DetectionMethod")
   fi
 done
 
-if (( ${#inconsistent_rows[@]} == 0 )); then
-  echo "All successful runs are consistent with run #1 on: Language, GateDecision, PipelineMode, MusicOnly, DetectionMethod."
+if (( ${#inconsistent_fields[@]} == 0 )); then
+  echo "All successful runs are consistent with baseline run #$((baseline_idx+1))."
   exit 0
 fi
 
-# Deduplicate fields_diff
-unique_fields=()
-for f in "${fields_diff[@]}"; do
-  skip=false
-  for uf in "${unique_fields[@]}"; do
-    if [[ "$f" == "$uf" ]]; then
-      skip=true
-      break
-    fi
-  done
-  if ! $skip; then
-    unique_fields+=( "$f" )
-  fi
-done
+# dedupe fields
+mapfile -t inconsistent_fields < <(printf "%s\n" "${inconsistent_fields[@]}" | sort -u)
 
-echo "Found inconsistencies vs run #1 for fields:"
-for f in "${unique_fields[@]}"; do
+echo "Found inconsistencies vs run #$((baseline_idx+1)) for fields:"
+for f in "${inconsistent_fields[@]}"; do
   echo "  $f"
-done
-echo
-echo "Inconsistent runs:"
-
-# Print table of inconsistent runs
-printf "%-4s %-38s %-8s %-11s %-20s %-10s %-8s %-15s %-8s %s\n" \
-  "Run" "JobId" "Lang" "Prob" "GateDecision" "Mode" "Music" "DetectMethod" "MidZone" "Transcript"
-printf "%-4s %-38s %-8s %-11s %-20s %-10s %-8s %-15s %-8s %s\n" \
-  "----" "--------------------------------------" "--------" "-----------" "--------------------" "----------" "--------" "---------------" "--------" "----------"
-
-for idx in "${inconsistent_rows[@]}"; do
-  run=$((idx+1))
-  job_id="${JOB_IDS[idx]}"
-  lang="${LANGS[idx]}"
-  prob="${PROBS[idx]}"
-  gate_dec="${GATE_DECS[idx]}"
-  mode="${MODES[idx]}"
-  music="${MUSIC_ONLYS[idx]}"
-  det="${DET_METHODS[idx]}"
-  mid="${MID_ZONES[idx]}"
-  transcript="${TRANSCRIPTS[idx]}"
-
-  printf "%-4s %-38s %-8s %-11s %-20s %-10s %-8s %-15s %-8s %s\n" \
-    "$run" "$job_id" "$lang" "$prob" "$gate_dec" "$mode" "$music" "$det" "$mid" "$transcript"
 done

@@ -1,4 +1,4 @@
-import io, os, tempfile, time, json
+import io, os, tempfile, time, json, sys
 import multiprocessing as mp
 try:
     from datetime import datetime, timedelta, UTC
@@ -56,11 +56,19 @@ app.add_middleware(
 # Configure logging
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+LOG_FORMAT = (
+    "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | job={extra[job_id]} | "
+    "{name}:{function}:{line} - {message}"
+)
+logger.remove()
+logger.configure(extra={"job_id": "-"})
+logger.add(sys.stderr, level=log_level, format=LOG_FORMAT)
 logger.add(
     (LOG_DIR / "service.log").as_posix(),
     rotation="10 MB",
     retention=10,
     level=log_level,
+    format=LOG_FORMAT,
 )
 
 # Init database

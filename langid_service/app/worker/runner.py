@@ -40,7 +40,7 @@ def process_one(session: Session, job: Job) -> None:
         audio = load_audio_mono_16k(job.input_path)
 
         # Detect language with EN/FR gate using the in-memory audio
-        lang_info = detect_lang_en_fr_only(audio)
+        lang_info = detect_lang_en_fr_only(audio, job_id=job.id)
         music_only = bool(lang_info.get("music_only"))
         lang = lang_info["language"]
         detection_method = lang_info.get("method", "autodetect")
