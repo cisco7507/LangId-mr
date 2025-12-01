@@ -219,15 +219,14 @@ def _create_audio_probe(audio: np.ndarray) -> np.ndarray:
     probe_samples = PROBE_DURATION_S * SAMPLE_RATE
     return audio[:probe_samples]
 
-def pick_en_or_fr_by_scoring(probe_audio: np.ndarray, *, job_id: str | None = None) -> str:
+def pick_en_or_fr_by_scoring(probe_audio: np.ndarray) -> str:
     """
     Runs cheap transcriptions on an audio probe for both English and French and
     picks the language with the higher average log probability.
     """
     model = get_model()
     scores = {}
-    log = logger.bind(job_id=job_id)
-    log.debug("Fallback scoring probe start", samples=len(probe_audio))
+    logger.debug("Fallback scoring probe start", samples=len(probe_audio))
 
     for lang in ["en", "fr"]:
         # Use cheap settings for the scoring probe
@@ -244,7 +243,7 @@ def pick_en_or_fr_by_scoring(probe_audio: np.ndarray, *, job_id: str | None = No
 
         logprobs = [s.avg_logprob for s in segments if s.avg_logprob is not None]
         scores[lang] = np.mean(logprobs) if logprobs else -99.0
-        log.debug(
+        logger.debug(
             "Fallback scoring partial",
             language=lang,
             avg_logprob=scores[lang],
@@ -252,26 +251,25 @@ def pick_en_or_fr_by_scoring(probe_audio: np.ndarray, *, job_id: str | None = No
         )
 
     chosen_lang = max(scores, key=scores.get)
-    log.info(
+    logger.info(
         f"Fallback scoring: en_score={scores.get('en', -99):.2f}, "
         f"fr_score={scores.get('fr', -99):.2f} -> Chosen: {chosen_lang}"
     )
     metrics.LANGID_FALLBACK_USED.inc()
     return chosen_lang
 
-def validate_language_strict(audio: np.ndarray, *, job_id: str | None = None):
+def validate_language_strict(audio: np.ndarray):
     """
     Performs a synchronous language check on an audio probe and raises an
     HTTPException if the language is not confidently detected as English or French.
     """
     model = get_model()
     probe_audio = _create_audio_probe(audio)
-    log = logger.bind(job_id=job_id)
-    log.debug("Strict gate invoked", duration_seconds=len(audio) / SAMPLE_RATE)
+    logger.debug("Strict gate invoked", duration_seconds=len(audio) / SAMPLE_RATE)
     segments, info = model.transcribe(probe_audio, vad_filter=False, beam_size=1)
     transcript = " ".join([getattr(seg, "text", "") for seg in segments if getattr(seg, "text", "")])
-    log.debug(
-        f"Strict gate transcript: {transcript}",
+    logger.debug(
+        "Strict gate transcript",
         tokens=tokenize_text(transcript),
         probability=info.language_probability,
         language=info.language,
@@ -292,7 +290,7 @@ def validate_language_strict(audio: np.ndarray, *, job_id: str | None = None):
             detail=f"Only English/French audio supported (p={probability:.2f}, got '{detected_lang}').",
         )
 
-def detect_lang_en_fr_only(audio: np.ndarray, *, job_id: str | None = None) -> Dict[str, Any]:
+def detect_lang_en_fr_only(audio: np.ndarray) -> Dict[str, Any]:
     """
     Detects language on a short audio probe with a strict EN/FR gate.
     Adds mid-zone heuristics based on English/French stopwords to decide whether
@@ -300,8 +298,7 @@ def detect_lang_en_fr_only(audio: np.ndarray, *, job_id: str | None = None) -> D
     The audio provided is the full audio clip.
     """
     model = get_model()
-    log = logger.bind(job_id=job_id)
-    log.debug("Lang gate pipeline start", samples=len(audio), allowlist=list(ALLOWED_LANGS))
+    logger.debug("Lang gate pipeline start", samples=len(audio), allowlist=list(ALLOWED_LANGS))
     probe_audio = _create_audio_probe(audio)
 
     # 1. Standard language detection on the probe (no VAD)
@@ -312,23 +309,23 @@ def detect_lang_en_fr_only(audio: np.ndarray, *, job_id: str | None = None) -> D
     detected_lang = info.language
     probability = info.language_probability
     prob_value = _safe_probability(probability)
-    log.info(f"detect(probe): autodetect={detected_lang} p={prob_value:.2f}")
+    logger.info(f"detect(probe): autodetect={detected_lang} p={prob_value:.2f}")
 
     # Debug: inspect transcript, tokens, and music-only probe classification
     tokens = tokenize_text(transcript)
     token_count = len(tokens)
     music_only = is_music_only_transcript(transcript)
-    log.debug(
-        f"Gate transcript: {transcript}",
+    logger.debug(
+        "Gate transcript",
         transcript=transcript,
         token_count=token_count,
         music_only_probe=music_only,
     )
-    log.debug("Gate tokens", tokens=tokens)
+    logger.debug("Gate tokens", tokens=tokens)
 
     en_ratio = compute_stopword_ratio(transcript, EN_STOPWORDS)
     fr_ratio = compute_stopword_ratio(transcript, FR_STOPWORDS)
-    log.debug(
+    logger.debug(
         "Stopword ratios",
         en_ratio=en_ratio,
         fr_ratio=fr_ratio,
@@ -336,7 +333,7 @@ def detect_lang_en_fr_only(audio: np.ndarray, *, job_id: str | None = None) -> D
     )
 
     if music_only:
-        log.info("Autodetect transcript indicates background music only; classifying as NO_SPEECH_MUSIC_ONLY.")
+        logger.info("Autodetect transcript indicates background music only; classifying as NO_SPEECH_MUSIC_ONLY.")
         return _build_gate_result(
             language="none",
             probability=probability,
@@ -356,10 +353,14 @@ def detect_lang_en_fr_only(audio: np.ndarray, *, job_id: str | None = None) -> D
                 token_count >= MIN_TOKENS_FOR_SPEECH
                 and dominant_ratio >= MIN_STOPWORD_FOR_SPEECH
             ):
-                log.info(
+                logger.info(
                     "Autodetect high confidence with speechy transcript: "
-                    f"lang={detected_lang} p={prob_value:.2f} tokens={token_count} "
-                    f"en_ratio={en_ratio:.2f} fr_ratio={fr_ratio:.2f}"
+                    "lang=%s p=%.2f tokens=%d en_ratio=%.2f fr_ratio=%.2f",
+                    detected_lang,
+                    prob_value,
+                    token_count,
+                    en_ratio,
+                    fr_ratio,
                 )
                 metrics.LANGID_AUTODETECT_ACCEPT.inc()
                 return _build_gate_result(
@@ -374,7 +375,7 @@ def detect_lang_en_fr_only(audio: np.ndarray, *, job_id: str | None = None) -> D
                     music_only=False,
                 )
 
-            log.info(
+            logger.info(
                 "High prob but transcript not speechy enough "
                 "(p=%.2f, tokens=%d, en_ratio=%.2f, fr_ratio=%.2f); "
                 "skipping high-conf accept and retrying with VAD.",
@@ -383,7 +384,7 @@ def detect_lang_en_fr_only(audio: np.ndarray, *, job_id: str | None = None) -> D
                 en_ratio,
                 fr_ratio,
             )
-            log.debug(
+            logger.debug(
                 "Speechiness failed",
                 dominant_ratio=dominant_ratio,
                 min_required=MIN_STOPWORD_FOR_SPEECH,
@@ -396,10 +397,10 @@ def detect_lang_en_fr_only(audio: np.ndarray, *, job_id: str | None = None) -> D
                 and en_ratio >= MID_EN_MIN_STOPWORD_RATIO
                 and en_ratio > fr_ratio + STOPWORD_MARGIN
             ):
-                log.info(
+                logger.info(
                     f"Autodetect mid-zone accepted (EN): p={prob_value:.2f}, en_ratio={en_ratio:.2f}, fr_ratio={fr_ratio:.2f}, tokens={token_count}"
                 )
-                log.debug(
+                logger.debug(
                     "Mid-zone EN heuristic",
                     en_ratio=en_ratio,
                     fr_ratio=fr_ratio,
@@ -424,10 +425,10 @@ def detect_lang_en_fr_only(audio: np.ndarray, *, job_id: str | None = None) -> D
                 and fr_ratio >= MID_FR_MIN_STOPWORD_RATIO
                 and fr_ratio > en_ratio + STOPWORD_MARGIN
             ):
-                log.info(
+                logger.info(
                     f"Autodetect mid-zone accepted (FR): p={prob_value:.2f}, en_ratio={en_ratio:.2f}, fr_ratio={fr_ratio:.2f}, tokens={token_count}"
                 )
-                log.debug(
+                logger.debug(
                     "Mid-zone FR heuristic",
                     en_ratio=en_ratio,
                     fr_ratio=fr_ratio,
@@ -447,13 +448,13 @@ def detect_lang_en_fr_only(audio: np.ndarray, *, job_id: str | None = None) -> D
                 )
 
     # 2. VAD retry if confidence is low or heuristics rejected the mid-zone case
-    log.info("Initial detection insufficient; re-trying with VAD on probe.")
-    log.debug("Scheduling VAD retry", prob_value=prob_value, detected_lang=detected_lang)
+    logger.info("Initial detection insufficient; re-trying with VAD on probe.")
+    logger.debug("Scheduling VAD retry", prob_value=prob_value, detected_lang=detected_lang)
     segments_vad, info_vad = model.transcribe(probe_audio, vad_filter=True, beam_size=1)
     detected_lang_vad = info_vad.language
     probability_vad = info_vad.language_probability
     prob_vad_value = _safe_probability(probability_vad)
-    log.info(
+    logger.info(
         f"detect(probe, VAD): autodetect={detected_lang_vad} p={prob_vad_value:.2f}"
     )
 
@@ -461,14 +462,14 @@ def detect_lang_en_fr_only(audio: np.ndarray, *, job_id: str | None = None) -> D
         getattr(seg, "text", "") for seg in segments_vad if getattr(seg, "text", "")
     ]
     transcript_vad = " ".join(transcript_vad_parts)
-    log.debug("VAD transcript", transcript=transcript_vad)
+    logger.debug("VAD transcript", transcript=transcript_vad)
 
     if is_music_only_transcript(transcript_vad):
-        log.info(
+        logger.info(
             "VAD transcript indicates background music only; "
             "classifying as NO_SPEECH_MUSIC_ONLY."
         )
-        log.debug("VAD transcript classified as music-only")
+        logger.debug("VAD transcript classified as music-only")
         return _build_gate_result(
             language="none",
             probability=probability_vad,
@@ -482,10 +483,10 @@ def detect_lang_en_fr_only(audio: np.ndarray, *, job_id: str | None = None) -> D
         )
     
     if detected_lang_vad in ALLOWED_LANGS and prob_vad_value >= LANG_DETECT_MIN_PROB:
-        log.info(
+        logger.info(
             f"Autodetect successful [via VAD]: lang={detected_lang_vad}, p={prob_vad_value:.2f} (threshold={LANG_DETECT_MIN_PROB:.2f})"
         )
-        log.debug(
+        logger.debug(
             "VAD acceptance detail",
             tokens=len(tokenize_text(transcript_vad)),
             en_ratio_vad=compute_stopword_ratio(transcript_vad, EN_STOPWORDS),
@@ -505,10 +506,10 @@ def detect_lang_en_fr_only(audio: np.ndarray, *, job_id: str | None = None) -> D
         )
 
     # 3. Handle non-EN/FR or persistent low confidence
-    log.warning(
+    logger.warning(
         f"Autodetect rejected: lang={detected_lang}, p={prob_value:.2f} (threshold={LANG_DETECT_MIN_PROB:.2f}). Entering fallback/reject logic."
     )
-    log.debug(
+    logger.debug(
         "Fallback conditions",
         detected_lang=detected_lang,
         prob_value=prob_value,
@@ -524,9 +525,9 @@ def detect_lang_en_fr_only(audio: np.ndarray, *, job_id: str | None = None) -> D
             detail=f"Only English/French audio supported (p={prob_value:.2f}, got '{detected_lang}').",
         )
 
-    log.info("VAD retry insufficient; falling back to EN/FR scoring probe.")
-    log.debug("Entering fallback scoring", prob_vad=prob_vad_value, lang_vad=detected_lang_vad)
-    chosen_lang = pick_en_or_fr_by_scoring(probe_audio, job_id=job_id)
+    logger.info("VAD retry insufficient; falling back to EN/FR scoring probe.")
+    logger.debug("Entering fallback scoring", prob_vad=prob_vad_value, lang_vad=detected_lang_vad)
+    chosen_lang = pick_en_or_fr_by_scoring(probe_audio)
     return _build_gate_result(
         language=chosen_lang,
         probability=None,
