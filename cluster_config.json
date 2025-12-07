@@ -1,0 +1,12 @@
+{
+    "_comment": "Place this file in the repository root (e.g. C:\\LangId-mr\\cluster_config.json) OR specify path via -ClusterConfig in nssm_install.ps1",
+    "self_name": "node-a",
+    "nodes": {
+        "node-a": "http://agn-vntg-ls01.production.ctv.ca:8080"
+    },
+    "health_check_interval_seconds": 30,
+    "internal_request_timeout_seconds": 10,
+    "enable_round_robin": true,
+    "rr_state_file": "C:\\ProgramData\\LangID\\rr_state.json",
+    "rr_strategy": "global"
+}
