@@ -1,0 +1,12 @@
+{
+  "job_id": "node-a-5056801e-d307-40ee-941e-df77e8831547",
+  "file": "45273_1920x1080_FR.wav",
+  "result": "NONE",
+  "reason": "FALLBACK",
+  "music_only": false,
+  "gate_decision": "fallback",
+  "pipeline_mode": "VAD",
+  "language": "eng",
+  "detection_method": "fallback",
+  "human_intervention": true
+}
