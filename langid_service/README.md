@@ -488,4 +488,3 @@ This README provides:
 - troubleshooting  
 
 Your LangID service is now fully documented and production-ready.
-
