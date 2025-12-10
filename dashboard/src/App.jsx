@@ -91,9 +91,9 @@ function App() {
   // Periodically refresh job list
   useEffect(() => {
     const fetchData = () => {
-      apiFetch("/jobs")
+      apiFetch("/cluster/jobs")
         .then((response) => response.json())
-        .then((data) => setJobs(data.jobs || []))
+        .then((data) => setJobs(data.items || []))
         .catch((error) => console.error("Error fetching jobs:", error));
     };
 

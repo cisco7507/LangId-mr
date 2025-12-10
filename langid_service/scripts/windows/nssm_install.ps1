@@ -5,7 +5,9 @@ RUN AS ADMINISTRATOR:
 
   Set-ExecutionPolicy RemoteSigned -Scope Process -Force
   cd C:\path\to\repo\langid_service\scripts\windows
-  .\nssm_install.ps1 -ServiceName LangIdAPI
+  or:
+
+  
 
 WHAT THIS DOES:
   - Automates NSSM installation (downloads if missing)
@@ -91,6 +93,45 @@ if (-not $nssmCmd) {
     # Add to current PATH so we can use it immediately
     $env:Path += ";$scriptDir"
     $nssm = "nssm.exe"
+
+    # Prefer copying into a folder already in PATH (System32) for immediate availability.
+    try {
+      $system32 = Join-Path $env:windir "System32"
+      if (Test-Path $system32) {
+        $installedNssm = Join-Path $system32 "nssm.exe"
+        Copy-Item -Path $localNssm -Destination $installedNssm -Force
+        Write-Host "Copied nssm.exe to $installedNssm" -ForegroundColor Green
+        $nssm = $installedNssm
+      } else {
+        throw "System32 not found"
+      }
+    } catch {
+      Write-Warning "Could not copy to System32 (will try Program Files): $($_.Exception.Message)"
+      try {
+        $installRoot = Join-Path $env:ProgramFiles "LangId\nssm"
+        if (-not (Test-Path $installRoot)) { New-Item -ItemType Directory -Force -Path $installRoot | Out-Null }
+        $installedNssm = Join-Path $installRoot "nssm.exe"
+        Copy-Item -Path $localNssm -Destination $installedNssm -Force
+
+        # Ensure the install folder is in the machine PATH so it survives reboots
+        $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+        if ($machinePath -notlike "*$installRoot*") {
+          $newMachinePath = $machinePath + ";" + $installRoot
+          [System.Environment]::SetEnvironmentVariable("Path", $newMachinePath, "Machine")
+          Write-Host "Added $installRoot to machine PATH (requires new processes to see change)." -ForegroundColor Green
+        } else {
+          Write-Host "$installRoot already present in machine PATH." -ForegroundColor Cyan
+        }
+
+        # Also add to current process PATH so we can use it immediately
+        if ($env:Path -notlike "*$installRoot*") { $env:Path += ";$installRoot" }
+        $nssm = Join-Path $installRoot "nssm.exe"
+      } catch {
+        Write-Warning "Failed to copy nssm to Program Files or update machine PATH: $($_.Exception.Message)"
+        Write-Host "Falling back to local nssm at $localNssm" -ForegroundColor Yellow
+        $nssm = $localNssm
+      }
+    }
 } else {
     Write-Host "NSSM is already installed and in PATH."
     $nssm = "nssm.exe"
@@ -193,6 +234,46 @@ $null = New-Item -ItemType Directory -Force -Path $CacheDir
 Write-Host "Preloading Whisper model '$ModelSize'..."
 $env:CT2_TRANSLATORS_CACHE = $CacheDir
 
+# Ensure Visual C++ Redistributable (x64) is present — required by ctranslate2
+function Test-VCRuntimePresent {
+  try {
+    $sysDir = Join-Path $env:windir "System32"
+    $names = @("VCRUNTIME140_1.dll", "VCRUNTIME140.dll", "api-ms-win-crt-runtime-l1-1-0.dll")
+    foreach ($n in $names) {
+      if (Test-Path (Join-Path $sysDir $n)) { return $true }
+    }
+    return $false
+  } catch { return $false }
+}
+
+function Install-VCRedist {
+  $vcredUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+  $installer = Join-Path $env:TEMP "vc_redist.x64.exe"
+  Write-Host "Downloading Visual C++ Redistributable (x64) to $installer..." -ForegroundColor Cyan
+  Invoke-WebRequest -Uri $vcredUrl -OutFile $installer -UseBasicParsing
+  Write-Host "Installing Visual C++ Redistributable (x64)..." -ForegroundColor Cyan
+  Start-Process -FilePath $installer -ArgumentList "/install","/passive","/norestart" -Wait
+  if (Test-Path $installer) { Remove-Item $installer -Force }
+}
+
+if (-not (Test-VCRuntimePresent)) {
+  Write-Host "Visual C++ runtime not detected. Attempting to install..." -ForegroundColor Yellow
+  try {
+    Install-VCRedist
+    Start-Sleep -Seconds 2
+    if (Test-VCRuntimePresent) {
+      Write-Host "Visual C++ runtime installed." -ForegroundColor Green
+    } else {
+      Write-Warning "VC runtime installer finished but runtime files still not found. You may need to reboot or install manually."
+    }
+  } catch {
+    Write-Warning "Automatic install of Visual C++ redistributable failed: $($_.Exception.Message)"
+    Write-Host "Please install the x64 Visual C++ Redistributable manually from: https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist" -ForegroundColor Yellow
+  }
+} else {
+  Write-Host "Visual C++ runtime detected." -ForegroundColor Cyan
+}
+
 # (Simplified preload check logic for brevity, assuming standard usage)
 # Running a quick check/download via python script
 & $venvPy -c "
@@ -200,11 +281,11 @@ from faster_whisper import WhisperModel
 import os
 print(f'Checking model $ModelSize in $CacheDir...')
 try:
-    m = WhisperModel('$ModelSize', device='$Device', compute_type='$Compute', download_root=r'$CacheDir')
-    print('Model loaded/downloaded successfully.')
+  m = WhisperModel('$ModelSize', device='$Device', compute_type='$Compute', download_root=r'$CacheDir')
+  print('Model loaded/downloaded successfully.')
 except Exception as e:
-    print(f'Error loading model: {e}')
-    exit(1)
+  print(f'Error loading model: {e}')
+  exit(1)
 "
 
 if ($LASTEXITCODE -ne 0) {
